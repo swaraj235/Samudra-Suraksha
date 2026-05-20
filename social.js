@@ -80,6 +80,47 @@ document.addEventListener('DOMContentLoaded', () => {
     const markers = L.markerClusterGroup();
     socialMap.addLayer(markers);
 
+    // ── Initialize Charts ───────────────────────────────────────────────
+    const tweetVolumeChart = new Chart(tweetVolumeChartCanvas, {
+        type: 'line',
+        data: {
+            labels: [],
+            datasets: [{
+                label: 'Posts',
+                data: [],
+                borderColor: '#10b981',
+                backgroundColor: 'rgba(16,185,129,0.1)',
+                tension: 0.4, fill: true, pointRadius: 3
+            }]
+        },
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+
+    const categoryChart = new Chart(sentimentChartCanvas, {
+        type: 'doughnut',
+        data: {
+            labels: ['Emergency', 'Neutral', 'Panic/Fear', 'Official', 'Other'],
+            datasets: [{
+                data: [0, 0, 0, 0, 0],
+                backgroundColor: ['#ef4444','#3b82f6','#f59e0b','#10b981','#6b7280']
+            }]
+        },
+        options: { responsive: true, plugins: { legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } } } }
+    });
+
+    const hazardDistributionChart = new Chart(hazardDistributionChartCanvas, {
+        type: 'bar',
+        data: {
+            labels: ['Flood', 'Tsunami', 'Waves', 'Erosion', 'Storm', 'Other'],
+            datasets: [{
+                label: 'Count',
+                data: [0, 0, 0, 0, 0, 0],
+                backgroundColor: ['#3b82f6','#8b5cf6','#06b6d4','#f59e0b','#ef4444','#6b7280']
+            }]
+        },
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+    });
+
     const observer = new MutationObserver(() => {
         if (!socialTab.classList.contains('hidden')) {
             setTimeout(() => {
@@ -170,9 +211,8 @@ document.addEventListener('DOMContentLoaded', () => {
         'GOMTI FLOOD PLAIN': [26.8467, 80.9462]
     };
 
-    const GEMINI_API_KEY = 'AIzaSyBGP2sJBfDmlx6siVbnZRZN7tv4NNYdX9A';
-    const GEMINI_MODEL = 'gemini-1.5-flash';
-    const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+    // ✅ SECURITY: Gemini API key is now on the backend.
+    //    Client calls /api/analyze-tweets — key never exposed in browser.
 
     let tweetsData = [];
     let tweetVolumeData = [];
@@ -254,13 +294,24 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
 
-                    if (resultData.length > 0) {
+                    // New backend returns {status, results, count}
+                    if (resultData.status === 'pending') {
+                        setTimeout(pollResults, 2000);
+                        return;
+                    }
+
+                    const tweets = resultData.results || [];
+                    if (resultData.status === 'done' && tweets.length > 0) {
                         tweetsData = [];
-                        await processTweetsWithGemini(resultData); // Processing is now handled in batches
+                        await processTweetsWithGemini(tweets);
                         updateTweetVolume();
                         applyFilters();
                         updateAnalytics();
                         updateMap(tweetsData);
+                        loadingSpinner.classList.add('hidden');
+                        return;
+                    } else if (resultData.status === 'done' && tweets.length === 0) {
+                        tweetsContainer.innerHTML = '<p class="text-gray-500 font-sans text-sm p-4">No relevant coastal hazard news found for this query. Try a broader search term.</p>';
                         loadingSpinner.classList.add('hidden');
                         return;
                     }
@@ -285,130 +336,112 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function processTweetsWithGemini(tweets) {
-        const BATCH_SIZE = 3;
-        const DISPLAY_DELAY = 1000; // Delay in ms between displaying each tweet
+
+    /**
+     * Normalizes the RSS backend response to the format social.js expects,
+     * then displays directly. Backend already ran Gemini — no re-analysis needed.
+     */
+    async function processTweetsWithGemini(rawTweets) {
+        tweetsContainer.innerHTML = '';
         let processedTweets = [];
 
-        const promptTemplate = `Classify the following tweet into ONE of these categories:
-- Emergency/Alert: High urgency, immediate danger (e.g., people in peril, evacuation needed).
-- Observation/Neutral Report: Factual info without panic (e.g., "Waves spotted at beach").
-- Panic/Fear: Expressions of fear, confusion, or exaggeration (e.g., "Everyone is dying!").
-- Awareness/Official Info: Sharing warnings, official updates, or advice (e.g., "INCOIS alert for Kerala").
+        for (const t of rawTweets) {
+            // ── Normalize field names from RSS backend ──────────────────
+            const hazard   = t.hazard_type || t.hazard || detectHazard(t.content || '');
+            const urgency  = t.urgency  || determineUrgency(t.category || '', hazard);
+            const locRegion = (t.location_region || t.location?.region || 'Unknown').toUpperCase();
+            const coords = (t.lat && t.lng)
+                ? [parseFloat(t.lat), parseFloat(t.lng)]
+                : (indianLocations[locRegion] || [20.5937, 78.9629]);
 
-Extract: 
-- Location (city/village/state if mentioned, e.g., "Chennai Marina Beach").
-- Hashtags (array of #tags, e.g., ["#ChennaiFloods"]).
-
-Flag misinformation/exaggeration? (yes/no, with brief reason if yes).
-
-Respond ONLY in valid JSON: {{"category": "Category Name", "location": "Extracted Location", "hashtags": ["#tag1", "#tag2"], "misinfo_flag": true/false, "misinfo_reason": "Reason if flagged"}}.
-
-Tweet: "{{TWEET_TEXT}}"
-
-Metadata: Timestamp: {{TIMESTAMP}}, Geo: {{GEO}}, User: {{USER}}`;
-
-        const online = isOnline();
-        if (!online) {
-            console.warn('social.js: No internet connection, using fallback processing');
-            tweetsContainer.innerHTML += '<p class="text-yellow-600 font-sans text-sm mt-2">Offline mode: Using basic keyword analysis (no Gemini).</p>';
-        }
-
-        // Process tweets in batches of 3
-        for (let i = 0; i < tweets.length; i += BATCH_SIZE) {
-            const batch = tweets.slice(i, i + BATCH_SIZE);
-            const batchPromises = batch.map(async tweet => {
-                const content = tweet.content || 'No content';
-                let category, location, hashtags, misinfo_flag, misinfo_reason;
-
-                if (online) {
-                    const fullPrompt = promptTemplate
-                        .replace('{{TWEET_TEXT}}', content.replace(/"/g, '\\"'))
-                        .replace('{{TIMESTAMP}}', tweet.metadata?.created_at || 'Unknown')
-                        .replace('{{GEO}}', tweet.metadata?.geo?.coordinates ? JSON.stringify(tweet.metadata.geo.coordinates) : 'No geo')
-                        .replace('{{USER}}', tweet.metadata?.username || 'Unknown');
-
-                    try {
-                        const responseText = await fetchWithRetry(GEMINI_URL, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ parts: [{ text: fullPrompt }] }],
-                                generationConfig: {
-                                    temperature: 0.1,
-                                    response_mime_type: 'application/json'
-                                }
-                            })
-                        });
-
-                        let cleanedText = responseText.replace(/```json\n|\n```/g, '').trim();
-                        let parsed;
-                        try {
-                            parsed = JSON.parse(cleanedText);
-                        } catch (parseErr) {
-                            console.warn('social.js: JSON parse failed for tweet:', content.substring(0, 50) + '...', parseErr.message, 'Response:', responseText);
-                            parsed = { category: 'Observation/Neutral Report', location: 'Unknown', hashtags: [], misinfo_flag: false, misinfo_reason: '' };
-                        }
-
-                        category = parsed.category || 'Observation/Neutral Report';
-                        location = parsed.location || 'Unknown';
-                        hashtags = parsed.hashtags || [];
-                        misinfo_flag = parsed.misinfo_flag || false;
-                        misinfo_reason = parsed.misinfo_reason || '';
-                    } catch (error) {
-                        console.error('social.js: Gemini Processing Error for tweet:', content.substring(0, 50) + '...', error.message);
-                        category = detectCategory(content);
-                        location = 'Unknown';
-                        hashtags = content.match(/#\w+/g) || [];
-                        misinfo_flag = detectMisinfo(content);
-                        misinfo_reason = misinfo_flag ? 'High numerical claims or extreme language detected' : '';
+            const normalized = {
+                ...t,
+                hazard,
+                urgency,
+                category:     t.category     || 'Observation/Neutral Report',
+                confidence:   t.confidence   || 0.75,
+                misinfo_flag: t.misinfo_flag  || false,
+                misinfo_reason: t.misinfo_reason || '',
+                hashtags:     Array.isArray(t.hashtags) ? t.hashtags : [],
+                sentiment:    t.sentiment    || 'neutral',
+                url:          t.url          || '',
+                location: {
+                    region: locRegion,
+                    coordinates: coords
+                },
+                // Keep legacy metadata shape for card renderer
+                metadata: {
+                    username:   t.username || t.metadata?.username || 'News Source',
+                    created_at: t.created_at || t.metadata?.created_at || new Date().toISOString(),
+                    public_metrics: {
+                        retweet_count: t.retweet_count || 0,
+                        like_count:    t.like_count    || 0,
+                        reply_count:   t.reply_count   || 0
                     }
-                } else {
-                    category = detectCategory(content);
-                    location = 'Unknown';
-                    hashtags = content.match(/#\w+/g) || [];
-                    misinfo_flag = detectMisinfo(content);
-                    misinfo_reason = misinfo_flag ? 'High numerical claims or extreme language detected' : '';
                 }
+            };
 
-                const hazard = detectHazard(content);
-                const urgency = determineUrgency(category, hazard);
-                const tweetLocation = extractLocation(tweet, location);
-
-                return {
-                    ...tweet,
-                    category,
-                    categoryScore: online ? 1.0 : 0.5,
-                    hazard,
-                    urgency,
-                    location: tweetLocation,
-                    hashtags,
-                    misinfo_flag,
-                    misinfo_reason
-                };
-            });
-
-            const batchResults = await Promise.all(batchPromises);
-            processedTweets = processedTweets.concat(batchResults);
-            tweetsData = processedTweets; // Update global tweetsData incrementally
-
-            // Display tweets one by one with delay
-            for (const tweet of batchResults) {
-                await new Promise(resolve => setTimeout(resolve, DISPLAY_DELAY));
-                displayTweets([tweet], true); // Append single tweet
-            }
-
-            // Add "More tweets coming..." message if more tweets are pending
-            if (i + BATCH_SIZE < tweets.length) {
-                tweetsContainer.innerHTML += '<p class="text-gray-600 font-sans text-sm text-center mt-4 mb-4" id="more-tweets">More tweets coming...</p>';
-                await new Promise(resolve => setTimeout(resolve, DISPLAY_DELAY));
-                const moreTweetsElement = document.getElementById('more-tweets');
-                if (moreTweetsElement) moreTweetsElement.remove();
-            }
+            processedTweets.push(normalized);
         }
 
-        console.log('social.js: Processed', processedTweets.length, 'tweets', online ? 'with Gemini' : 'with fallback');
+        tweetsData = processedTweets;
+        displayTweets(processedTweets);
+        console.log(`social.js: Displayed ${processedTweets.length} normalized posts (already Gemini-analyzed by backend)`);
         return processedTweets;
+    }
+
+    /** Show a spike alert banner in the UI */
+    function showSpikeAlert(spike) {
+        const banner = document.createElement('div');
+        banner.className = 'bg-red-50 border border-red-400 text-red-800 px-4 py-3 rounded-lg mb-3 flex items-start space-x-3';
+        banner.innerHTML = `
+            <span class="text-xl">🚨</span>
+            <div>
+                <p class="font-bold text-sm">Spike Detected: ${spike.hazard.toUpperCase()} in ${spike.region}</p>
+                <p class="text-xs">${spike.message}</p>
+                <p class="text-xs text-gray-500 mt-1">A draft alert has been queued in the Alerts tab for review.</p>
+            </div>
+            <button onclick="this.parentElement.remove()" class="ml-auto text-red-400 hover:text-red-600 text-lg font-bold">&times;</button>
+        `;
+        tweetsContainer.insertBefore(banner, tweetsContainer.firstChild);
+    }
+
+    /** Persist analyzed tweets to Supabase social_intelligence table (fire-and-forget) */
+    async function persistTweetsToSupabase(tweets) {
+        try {
+            // Use the global supabaseClient from dashboard33.js (shared scope)
+            if (typeof supabaseClient === 'undefined') return;
+
+            const rows = tweets.map(t => ({
+                source:          'twitter',
+                tweet_id:        t.metadata?.id || null,
+                content:         t.content || '',
+                username:        t.metadata?.username || null,
+                hazard_type:     t.hazard || 'other',
+                category:        t.category || 'Observation/Neutral Report',
+                urgency:         t.urgency || 'low',
+                confidence:      t.confidence || 0.5,
+                location_region: t.location?.region || 'Unknown',
+                lat:             t.location?.coordinates?.[0] || null,
+                lng:             t.location?.coordinates?.[1] || null,
+                hashtags:        JSON.stringify(t.hashtags || []),
+                misinfo_flag:    t.misinfo_flag || false,
+                misinfo_reason:  t.misinfo_reason || '',
+                retweet_count:   t.metadata?.public_metrics?.retweet_count || 0,
+                like_count:      t.metadata?.public_metrics?.like_count || 0,
+                reply_count:     t.metadata?.public_metrics?.reply_count || 0,
+                tweet_created_at: t.metadata?.created_at || null
+            })).filter(r => r.content);
+
+            const { error } = await supabaseClient
+                .from('social_intelligence')
+                .upsert(rows, { onConflict: 'tweet_id', ignoreDuplicates: true });
+
+            if (error) console.warn('social.js: Supabase persist error:', error.message);
+            else console.log(`social.js: Persisted ${rows.length} tweets to Supabase`);
+        } catch (e) {
+            console.warn('social.js: Persist failed silently:', e.message);
+        }
     }
 
     function detectCategory(content) {
@@ -614,96 +647,113 @@ Metadata: Timestamp: {{TIMESTAMP}}, Geo: {{GEO}}, User: {{USER}}`;
         }
 
         const tweetHTML = tweets.map((tweet) => {
-            const username = tweet.metadata?.username || 'Unknown User';
-            const content = tweet.content || 'No content';
-            const createdAt = tweet.metadata?.created_at ? new Date(tweet.metadata.created_at).toLocaleString('en-IN', {
-                timeZone: 'Asia/Kolkata',
-                weekday: 'short',
-                year: 'numeric',
-                month: 'short',
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
+            const username  = tweet.metadata?.username || tweet.username || 'News Source';
+            const content   = tweet.content || 'No content';
+            const rawDate   = tweet.metadata?.created_at || tweet.created_at;
+            const createdAt = rawDate ? new Date(rawDate).toLocaleString('en-IN', {
+                timeZone: 'Asia/Kolkata', weekday: 'short', year: 'numeric',
+                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
             }) : 'Unknown Date';
-            const retweetCount = tweet.metadata?.public_metrics?.retweet_count || 0;
-            const likeCount = tweet.metadata?.public_metrics?.like_count || 0;
-            const replyCount = tweet.metadata?.public_metrics?.reply_count || 0;
+            const retweetCount = tweet.metadata?.public_metrics?.retweet_count || tweet.retweet_count || 0;
+            const likeCount    = tweet.metadata?.public_metrics?.like_count    || tweet.like_count    || 0;
+            const replyCount   = tweet.metadata?.public_metrics?.reply_count   || tweet.reply_count   || 0;
+            const regionName   = tweet.location?.region || tweet.location_region || 'Unknown';
             const categoryBadgeClass = getCategoryBadgeClass(tweet.category);
-            const urgencyBadgeClass = tweet.urgency === 'high' ? 'bg-red-500 text-white' :
-                                      tweet.urgency === 'medium' ? 'bg-yellow-500 text-white' : 'bg-green-500 text-white';
-            const misinfoBadge = tweet.misinfo_flag ? `<span class="px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs ml-2">⚠️ Suspect: ${tweet.misinfo_reason}</span>` : '';
-
-            const mediaUrls = content.match(/https:\/\/pbs\.twimg\.com\/media\/[^ \n]+|https:\/\/pbs\.gstatic\.com\/media\/[^ \n]+/g) || [];
-            const images = mediaUrls.slice(0, 4).map(url => url.replace(/name=small/, 'name=large'));
+            const urgencyBadgeClass  = tweet.urgency === 'high'   ? 'bg-red-500 text-white' :
+                                       tweet.urgency === 'medium' ? 'bg-yellow-500 text-white' : 'bg-green-500 text-white';
+            const misinfoBadge = tweet.misinfo_flag
+                ? `<span class="px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs">⚠️ Suspect</span>` : '';
+            const articleLink = tweet.url
+                ? `<a href="${tweet.url}" target="_blank" rel="noopener noreferrer"
+                      class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium mt-1">
+                      <i class="fas fa-external-link-alt"></i> Read Article
+                   </a>` : '';
+            const genAIBadge = tweet.confidence
+                ? `<span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-purple-100 text-purple-700 text-xs">
+                      ✨ AI ${Math.round((tweet.confidence || 0.75) * 100)}% confidence
+                   </span>` : '';
+            const sentimentIcon = tweet.sentiment === 'positive' ? '🟢' : tweet.sentiment === 'negative' ? '🔴' : '🟡';
 
             return `
-                <div class="bg-white rounded-lg shadow-md p-4 mb-4 border border-gray-100">
-                    <div class="flex items-center space-x-3 mb-2">
-                        <i class="fab fa-twitter text-blue-400 text-xl"></i>
-                        <div>
-                            <p class="font-semibold text-gov-primary">${username}</p>
-                            <p class="text-sm text-gray-500">${createdAt} • ${tweet.location.region}</p>
+                <div class="bg-white rounded-lg shadow-sm p-4 mb-3 border border-gray-100 hover:shadow-md transition-shadow">
+                    <div class="flex items-start justify-between mb-2">
+                        <div class="flex items-center space-x-2">
+                            <div class="w-8 h-8 rounded-full bg-emerald-100 flex items-center justify-center">
+                                <i class="fas fa-newspaper text-emerald-600 text-xs"></i>
+                            </div>
+                            <div>
+                                <p class="font-semibold text-sm text-gray-900">${username}</p>
+                                <p class="text-xs text-gray-400">${createdAt} · ${regionName}</p>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-1">
+                            ${sentimentIcon}
+                            ${misinfoBadge}
                         </div>
                     </div>
-                    <p class="mt-2 text-gray-700 font-sans text-sm mb-3">${content}</p>
-                    ${images.length > 0 ? `
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
-                            ${images.map(img => `<img src="${img}" alt="Tweet media" class="w-full h-48 object-cover rounded-lg" loading="lazy">`).join('')}
+                    <p class="text-gray-700 text-sm mb-3 leading-relaxed">${content.substring(0, 250)}${content.length > 250 ? '…' : ''}</p>
+                    <div class="flex flex-wrap items-center gap-2 mb-2">
+                        <span class="px-2 py-1 rounded-full text-xs ${categoryBadgeClass}">${tweet.category}</span>
+                        <span class="px-2 py-1 rounded-full bg-blue-100 text-blue-700 text-xs">🌊 ${(tweet.hazard || 'other').charAt(0).toUpperCase() + (tweet.hazard || 'other').slice(1)}</span>
+                        <span class="px-2 py-1 rounded-full text-xs ${urgencyBadgeClass}">⚡ ${(tweet.urgency || 'low').toUpperCase()}</span>
+                        ${genAIBadge}
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center space-x-3 text-xs text-gray-400">
+                            <span><i class="fas fa-reply mr-1"></i>${replyCount}</span>
+                            <span><i class="fas fa-retweet mr-1"></i>${retweetCount}</span>
+                            <span><i class="fas fa-heart mr-1"></i>${likeCount}</span>
                         </div>
-                    ` : ''}
-                    <div class="flex items-center space-x-4 text-sm text-gray-500 mb-2">
-                        <span><i class="fas fa-reply mr-1"></i> ${replyCount}</span>
-                        <span><i class="fas fa-retweet mr-1"></i> ${retweetCount}</span>
-                        <span><i class="fas fa-heart mr-1"></i> ${likeCount}</span>
+                        ${articleLink}
                     </div>
-                    <div class="flex items-center space-x-4 text-sm flex-wrap">
-                        <span class="px-2 py-1 rounded-full ${categoryBadgeClass}">Category: ${tweet.category}</span>
-                        <span class="px-2 py-1 rounded-full bg-gray-200 text-gray-700">Hazard: ${tweet.hazard}</span>
-                        <span class="px-2 py-1 rounded-full ${urgencyBadgeClass}">Urgency: ${tweet.urgency}</span>
-                        ${misinfoBadge}
-                        ${tweet.hashtags.length > 0 ? `<span class="text-xs text-gray-500">Hashtags: ${tweet.hashtags.slice(0, 3).join(', ')}${tweet.hashtags.length > 3 ? '...' : ''}</span>` : ''}
-                    </div>
+                    ${(tweet.hashtags||[]).length > 0 ? `<p class="text-xs text-gray-400 mt-2">${(tweet.hashtags||[]).slice(0,4).map(h=>'<span class="mr-1">'+h+'</span>').join('')}</p>` : ''}
                 </div>
             `;
         }).join('');
 
+
+        // ✅ XSS Protection: sanitize HTML before injection
+        // DOMPurify is loaded in samudradashboard.html
+        const sanitize = (typeof DOMPurify !== 'undefined')
+            ? (html) => DOMPurify.sanitize(html, { USE_PROFILES: { html: true } })
+            : (html) => html; // graceful fallback
+
         if (append) {
-            tweetsContainer.innerHTML += tweetHTML;
+            tweetsContainer.innerHTML += sanitize(tweetHTML);
         } else {
-            tweetsContainer.innerHTML = tweetHTML;
+            tweetsContainer.innerHTML = sanitize(tweetHTML);
         }
 
         console.log('social.js: Tweets rendered successfully');
     }
 
-    searchButton.addEventListener('click', () => {
-        if (!isOnline()) {
-            tweetsContainer.innerHTML = '<p class="text-red-600 font-sans text-sm">No internet connection. Please reconnect and try again.</p>';
-            return;
-        }
-        const query = searchInput.value.trim() || '(tsunami OR flood OR waves OR erosion OR storm OR cyclone OR बाढ़ OR सुनामी OR வெள்ளம் OR వరద OR വെള്ളപ്പൊക്കം OR புயல் OR తుఫాను OR കൊടുങ্কാറ്റ്) lang:en OR lang:hi OR lang:ta OR lang:te OR lang:ml';
-        searchTwitter(query);
-    });
+    // ✅ Debounced search — 500ms delay prevents duplicate API calls on rapid clicks
+    const DEFAULT_QUERY = '(tsunami OR flood OR waves OR erosion OR storm OR cyclone OR बाढ़ OR सुनामी OR வெள்ளம் OR వరద OR വെള്ളപ്പൊക്കം OR புயல் OR తుఫాను OR കൊടുങ്കാറ്റ്) lang:en OR lang:hi OR lang:ta OR lang:te OR lang:ml';
+    let _searchDebounce = null;
 
-    searchInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
+    function triggerSearch() {
+        clearTimeout(_searchDebounce);
+        _searchDebounce = setTimeout(() => {
             if (!isOnline()) {
                 tweetsContainer.innerHTML = '<p class="text-red-600 font-sans text-sm">No internet connection. Please reconnect and try again.</p>';
                 return;
             }
-            const query = searchInput.value.trim() || '(tsunami OR flood OR waves OR erosion OR storm OR cyclone OR बाढ़ OR सुनामी OR வெள்ளம் OR వరద OR വെള്ളപ്പൊക്കം OR புயல் OR తుఫాను OR കൊടുങ্কാറ്റ്) lang:en OR lang:hi OR lang:ta OR lang:te OR lang:ml';
+            const query = searchInput.value.trim() || DEFAULT_QUERY;
             searchTwitter(query);
+        }, 500);
+    }
+
+    // ✅ Event listeners — all wired through the debounced trigger
+    searchButton.addEventListener('click', triggerSearch);
+
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            triggerSearch();
         }
     });
 
-    refreshButton.addEventListener('click', () => {
-        if (!isOnline()) {
-            tweetsContainer.innerHTML = '<p class="text-red-600 font-sans text-sm">No internet connection. Please reconnect and try again.</p>';
-            return;
-        }
-        const query = searchInput.value.trim() || '(tsunami OR flood OR waves OR erosion OR storm OR cyclone OR बाढ़ OR सुनामी OR வெள்ளம் OR వరద OR വെള്ളപ്പൊക്കം OR புயல் OR తుఫాను OR കൊടുങ্কാറ്റ്) lang:en OR lang:hi OR lang:ta OR lang:te OR lang:ml';
-        searchTwitter(query);
-    });
+    refreshButton.addEventListener('click', triggerSearch);
 
     hazardFilter.addEventListener('change', applyFilters);
     sentimentFilter.addEventListener('change', applyFilters);

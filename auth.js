@@ -92,25 +92,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
 
                     alert('Login successful! Redirecting to dashboard...');
-                    window.location.href = '/GOVERNMENT_WEBSITE/samudradashboard.html';
+                    window.location.href = '/dashboard';
                 } else {
-                    // Check if email already exists
-                    console.log('Checking if email exists:', email);
-                    const { data: existingUser, error: checkError } = await supabase
-                        .from('users_metadata')
-                        .select('id')
-                        .eq('email', email)
-                        .maybeSingle();
-
-                    if (checkError) {
-                        console.error('Error checking email:', checkError);
-                        throw new Error('Error checking email availability: ' + checkError.message);
-                    }
-
-                    if (existingUser) {
-                        throw new Error('This email is already registered. Please use a different email or log in.');
-                    }
-
+                    // Supabase Auth natively rejects duplicate emails — no pre-check needed
                     console.log('Attempting signup for email:', email, 'with metadata:', { role: 'gov_portal', state, department_name: departmentName });
                     const { data, error } = await supabase.auth.signUp({
                         email,
@@ -132,33 +116,23 @@ document.addEventListener('DOMContentLoaded', function() {
                     const { user } = data;
                     if (user) {
                         console.log('User registered with ID:', user.id);
-                        console.log('Raw user metadata:', user.user_metadata);
 
-                        // Retry metadata verification up to 3 times with delay
-                        let metadata;
-                        let metadataError;
-                        for (let attempt = 1; attempt <= 3; attempt++) {
-                            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-                            console.log(`Attempt ${attempt}: Verifying metadata for user ID: ${user.id}`);
-                            const { data: meta, error: metaErr } = await supabase
-                                .from('users_metadata')
-                                .select('role, state, department_name')
-                                .eq('id', user.id)
-                                .maybeSingle();
+                        // Directly insert metadata row — works without a DB trigger
+                        const { error: insertError } = await supabase
+                            .from('users_metadata')
+                            .upsert({
+                                id: user.id,
+                                role: 'gov_portal',
+                                state,
+                                department_name: departmentName
+                            }, { onConflict: 'id' });
 
-                            metadata = meta;
-                            metadataError = metaErr;
-                            if (metadata && metadata.role === 'gov_portal') break;
+                        if (insertError) {
+                            console.warn('Metadata insert warning (non-fatal):', insertError.message);
+                            // Non-fatal: admin can set role manually in Supabase dashboard
                         }
 
-                        if (metadataError || !metadata || metadata.role !== 'gov_portal') {
-                            console.error('Metadata verification error:', metadataError || 'No metadata found or incorrect role');
-                            console.error('Metadata found:', metadata);
-                            throw new Error('Failed to verify user metadata. Role is not set to gov_portal. Please try again or contact support.');
-                        }
-
-                        console.log('Metadata created:', metadata);
-                        alert('Registration successful! Please check your email for verification and then log in.');
+                        alert('Registration successful! Please check your email for verification, then log in.');
                         form.reset();
                     } else {
                         throw new Error('No user returned from signup.');

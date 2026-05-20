@@ -1,75 +1,65 @@
-from flask import Flask, send_file, jsonify, request
-from flask_cors import CORS
-import requests
-import time
+"""
+app.py  (project root — entry point)
+--------------------------------------
+Refactored Flask application using Blueprints.
+All API secrets are loaded from backend/.env — never hardcoded here.
+"""
 import logging
+import os
+from flask import Flask, send_from_directory
+from flask_cors import CORS
 
-app = Flask(__name__)
-CORS(app)
+# ── Bootstrap path so backend package is importable ─────────────────────────
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
 
-logging.basicConfig(level=logging.DEBUG)
+from backend.config import FLASK_DEBUG, FLASK_SECRET_KEY
+from backend.routes.twitter  import twitter_bp
+from backend.routes.analysis import analysis_bp
+from backend.routes.alerts   import alerts_bp
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.DEBUG if FLASK_DEBUG else logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s — %(message)s"
+)
 logger = logging.getLogger(__name__)
 
-GOPHER_API_URL = "https://data.gopher-ai.com/api/v1/search/live/twitter"
-GOPHER_AUTH_TOKEN = "Cwq3eiwszKKMpNjvLBBsTiHnSA3meann7qHoUpHStYJH7XHx"
+# ── App factory ───────────────────────────────────────────────────────────────
+app = Flask(__name__, static_folder=".", static_url_path="")
+app.secret_key = FLASK_SECRET_KEY
 
-@app.route('/api/twitter/search', methods=['POST'])
-def twitter_search():
-    data = request.get_json()
-    query = data.get('query')
-    if not query:
-        return jsonify({"error": "Query is required"}), 400
-    max_results = data.get('max_results', 20)  # Limit to 20 tweets
-    
-    headers = {
-        "Authorization": f"Bearer {GOPHER_AUTH_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "type": "twitter",
-        "arguments": {
-            "type": "searchbyquery",
-            "query": query,
-            "max_results": max_results
-        }
-    }
-    
-    logger.debug(f"Sending search: {query}, max_results: {max_results}")
-    try:
-        response = requests.post(GOPHER_API_URL, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
-        response_data = response.json()
-        logger.debug(f"Search Response: {response_data}")
-        job_uuid = response_data.get('uuid')
-        if not job_uuid:
-            return jsonify({"error": "No uuid returned"}), 500
-        return jsonify({"jobUUID": job_uuid})
-    except Exception as e:
-        logger.error(f"Search Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+# Allow CORS for frontend requests (restrict origins in production)
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
-@app.route('/api/twitter/result/<job_uuid>', methods=['GET'])
-def twitter_result(job_uuid):
-    headers = {
-        "Authorization": f"Bearer {GOPHER_AUTH_TOKEN}"
-    }
-    try:
-        response = requests.get(f"{GOPHER_API_URL}/result/{job_uuid}", headers=headers, timeout=60)
-        response.raise_for_status()
-        response_data = response.json()
-        logger.debug(f"Result Response: {len(response_data)} tweets")
-        return jsonify(response_data)
-    except Exception as e:
-        logger.error(f"Result Error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+# ── Register blueprints ───────────────────────────────────────────────────────
+app.register_blueprint(twitter_bp)
+app.register_blueprint(analysis_bp)
+app.register_blueprint(alerts_bp)
 
-@app.route('/')
-def serve_dashboard():
-    return send_file('samudradashboard.html')
+# ── Static file serving (dashboard HTML, JS, assets) ─────────────────────────
+@app.route("/")
+def index():
+    return send_from_directory(".", "auth.html")
 
-@app.route('/<path:filename>')
+@app.route("/dashboard")
+def dashboard():
+    return send_from_directory(".", "samudradashboard.html")
+
+@app.route("/<path:filename>")
 def serve_static(filename):
-    return send_file(filename)
+    # Security: prevent path traversal
+    safe_path = os.path.normpath(filename)
+    if safe_path.startswith(".."):
+        return "Forbidden", 403
+    return send_from_directory(".", safe_path)
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+# ── Health check ──────────────────────────────────────────────────────────────
+@app.route("/api/health")
+def health():
+    return {"status": "ok", "service": "Samudra Suraksha API"}, 200
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    logger.info("Starting Samudra Suraksha API server...")
+    app.run(debug=FLASK_DEBUG, host="0.0.0.0", port=5000)

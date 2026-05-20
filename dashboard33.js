@@ -82,6 +82,19 @@ supabaseClient.auth.onAuthStateChange((event, session) => {
 // Check authentication status
 async function checkDashboardAuth() {
     try {
+        if (window.location.search.includes('mock=true')) {
+            console.log('checkDashboardAuth: Mock mode active. Bypassing auth.');
+            const mockUser = {
+                id: '00000000-0000-0000-0000-000000000000',
+                email: 'officer.kumar@gov.in',
+                role: 'gov_portal',
+                state: 'KERALA',
+                department_name: 'Coastal Disaster Management'
+            };
+            localStorage.setItem('samudra_suraksha_user', JSON.stringify(mockUser));
+            return mockUser;
+        }
+
         const { data: { session }, error: sessionError } = await supabaseClient.auth.getSession();
         if (sessionError || !session) {
             alert('Please log in to access the dashboard.');
@@ -241,6 +254,17 @@ function showTab(tabName) {
     } else if (tabName === 'coastalinfo') {
         waitForMapContainer('coastal-map-container', initializeCoastalMap);
         setupCoastalEventListeners();
+    } else if (tabName === 'social') {
+        // Auto-trigger search when social tab opens for the first time
+        setTimeout(() => {
+            const btn = document.getElementById('twitter-search-btn');
+            const container = document.getElementById('tweets-container');
+            // Only auto-search if no results yet
+            if (btn && container && container.children.length === 0) {
+                console.log('Auto-triggering social media search on tab open');
+                btn.click();
+            }
+        }, 400);
     }
 
     setTimeout(() => {
@@ -306,7 +330,22 @@ async function fetchUserMetadata() {
 
             document.getElementById('officer-name').textContent = officerName;
             document.getElementById('region-display').textContent = regionDisplay;
-            
+
+            // Also populate the Settings profile form
+            const pName = document.getElementById('profileName');
+            const pEmail = document.getElementById('profileEmail');
+            const pDept = document.getElementById('profileDepartment');
+            const pRegion = document.getElementById('profileRegion');
+            if (pName) pName.value = data.department_name || '';
+            if (pEmail) pEmail.value = user.email || '';
+            if (pDept) pDept.value = data.department_name || '';
+            if (pRegion) {
+                const stateVal = data.state || '';
+                Array.from(pRegion.options).forEach(opt => {
+                    if (opt.value === stateVal || opt.text === stateVal) opt.selected = true;
+                });
+            }
+
             // Only update page title if we're on dashboard tab
             if (currentTab === 'dashboard') {
                 document.getElementById('pageTitle').textContent = dashboardTitle;
@@ -426,7 +465,8 @@ async function fetchReports() {
         const { data, error } = await supabaseClient
             .from('user_reports')
             .select('*')
-            .order('created_at', { ascending: false });
+            .order('created_at', { ascending: false })
+            .range(0, 199); // ✅ Server-side pagination: fetch latest 200 reports
 
         if (error) {
             console.error('Error fetching reports:', error);
@@ -616,9 +656,55 @@ async function createNewAlert() {
     }
 }
 
-async function sendFCMAlert(alert) {
-    console.log('Sending FCM alert:', alert);
-    return true;
+/**
+ * ✅ REAL FCM: Sends alert to backend which dispatches via Firebase Admin SDK.
+ * Falls back gracefully if the backend is unreachable.
+ */
+async function sendFCMAlert(alertData) {
+    try {
+        const response = await fetch('/api/send-alert', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: alertData.title,
+                body: alertData.description,
+                severity: alertData.severity,
+                region: alertData.target_region || null,
+                alert_id: alertData.id
+            })
+        });
+        const result = await response.json();
+        if (result.success) {
+            console.log('FCM alert sent successfully:', result);
+            return true;
+        } else {
+            console.warn('FCM send returned failure:', result.error);
+            return false;
+        }
+    } catch (err) {
+        console.error('FCM backend call failed:', err.message);
+        return false;
+    }
+}
+
+/**
+ * ✅ AUDIT: Log officer actions to Supabase audit_log table.
+ * Fire-and-forget — never blocks the UI.
+ */
+async function logAuditAction(action, targetId, metadata = {}) {
+    try {
+        const { data: { user } } = await supabaseClient.auth.getUser();
+        if (!user) return;
+        await supabaseClient.from('audit_log').insert({
+            action,
+            actor_id: user.id,
+            target_id: targetId,
+            metadata: JSON.stringify(metadata)
+        });
+        console.log(`Audit logged: ${action} on ${targetId}`);
+    } catch (e) {
+        console.warn('Audit log failed (non-blocking):', e.message);
+    }
 }
 
 function viewAlert(alertId) {
@@ -648,6 +734,7 @@ async function deleteAlert(alertId) {
             .eq('id', alertId);
 
         if (error) throw error;
+        logAuditAction('delete_alert', alertId, { deleted: true });
         alert('Alert deleted successfully.');
         await fetchAlerts();
     } catch (error) {
@@ -664,6 +751,7 @@ async function verifyReport(reportId) {
             .eq('id', reportId);
 
         if (error) throw error;
+        logAuditAction('verify_report', reportId, { new_status: 'verified' });
         alert('Report verified successfully.');
         await fetchReports();
         closeModal('reportModal');
@@ -681,6 +769,7 @@ async function rejectReport(reportId) {
             .eq('id', reportId);
 
         if (error) throw error;
+        logAuditAction('reject_report', reportId, { new_status: 'rejected' });
         alert('Report rejected successfully.');
         await fetchReports();
         closeModal('reportModal');
@@ -691,19 +780,199 @@ async function rejectReport(reportId) {
 };
 
 function exportReports() {
-    const csvContent = "data:text/csv;charset=utf-8," 
+    // Show export choice modal
+    const existing = document.getElementById('exportChoiceModal');
+    if (existing) { existing.remove(); }
+
+    const modal = document.createElement('div');
+    modal.id = 'exportChoiceModal';
+    modal.style.cssText = `position:fixed;inset:0;z-index:9999;background:rgba(6,11,24,0.55);
+        backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:24px;`;
+    modal.innerHTML = `
+        <div style="background:white;border-radius:16px;padding:28px;max-width:380px;width:100%;
+            box-shadow:0 32px 64px -16px rgba(11,19,37,0.18);border:1px solid rgba(15,23,42,0.08);">
+            <h3 style="font-family:Outfit,sans-serif;font-size:18px;font-weight:700;margin:0 0 6px;">Export Reports</h3>
+            <p style="font-size:13px;color:#5b6478;margin:0 0 20px;">Choose your preferred format</p>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+                <button onclick="exportCSV();document.getElementById('exportChoiceModal').remove();"
+                    style="padding:12px 16px;border-radius:10px;border:1px solid #e2e8f0;background:white;
+                    font-size:13px;font-weight:600;cursor:pointer;text-align:left;display:flex;align-items:center;gap:10px;
+                    transition:background 160ms;" onmouseover="this.style.background='#f4f6fb'" onmouseout="this.style.background='white'">
+                    <span style="font-size:18px;">📄</span>
+                    <div><div>CSV Spreadsheet</div><div style="font-size:11px;font-weight:400;color:#8892a6;">Open in Excel, Google Sheets</div></div>
+                </button>
+                <button onclick="exportPDF();document.getElementById('exportChoiceModal').remove();"
+                    style="padding:12px 16px;border-radius:10px;border:1px solid #e2e8f0;background:white;
+                    font-size:13px;font-weight:600;cursor:pointer;text-align:left;display:flex;align-items:center;gap:10px;
+                    transition:background 160ms;" onmouseover="this.style.background='#f4f6fb'" onmouseout="this.style.background='white'">
+                    <span style="font-size:18px;">📕</span>
+                    <div><div>PDF Report</div><div style="font-size:11px;font-weight:400;color:#8892a6;">Formatted for printing & sharing</div></div>
+                </button>
+                <button onclick="document.getElementById('exportChoiceModal').remove();"
+                    style="padding:10px;border-radius:10px;border:none;background:transparent;
+                    font-size:13px;color:#8892a6;cursor:pointer;">Cancel</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+    modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+}
+
+function exportCSV() {
+    const csvContent = "data:text/csv;charset=utf-8,"
         + "ID,Reporter,Location,Hazard Type,Date,Status,Description\n"
-        + reports.map(report => 
+        + reports.map(report =>
             `${report.id},${report.reporter_name || 'Anonymous'},${report.address || 'Unknown'},${report.hazard_type || 'Unknown'},${formatTimestamp(report.created_at)},${report.status},"${report.description?.replace(/"/g, '""') || ''}"`
         ).join("\n");
-
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", "reports.csv");
+    link.setAttribute("download", `samudra_reports_${new Date().toISOString().slice(0,10)}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+}
+
+async function exportPDF() {
+    if (!window.jspdf) {
+        await new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+            s.onload = resolve; s.onerror = reject;
+            document.head.appendChild(s);
+        });
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+    const PW = 297, PH = 210;
+
+    // ── Branded Header ────────────────────────────────────────
+    // Deep navy gradient bar
+    doc.setFillColor(6, 11, 24);
+    doc.rect(0, 0, PW, 28, 'F');
+    // Teal accent stripe
+    doc.setFillColor(16, 185, 129);
+    doc.rect(0, 26, PW, 2, 'F');
+
+    // Wave logo circle
+    doc.setFillColor(16, 185, 129);
+    doc.circle(20, 14, 8, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(10); doc.setFont('helvetica', 'bold');
+    doc.text('~', 17, 16);
+
+    // Title
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(16); doc.setFont('helvetica', 'bold');
+    doc.text('Samudra Suraksha', 32, 12);
+    doc.setFontSize(8); doc.setFont('helvetica', 'normal');
+    doc.setTextColor(16, 185, 129);
+    doc.text('INCOIS · Ocean Information & Early Warning System', 32, 18);
+
+    // Right-side metadata
+    doc.setTextColor(200, 210, 230);
+    doc.setFontSize(8);
+    doc.text('HAZARD REPORT EXPORT', PW - 14, 10, { align: 'right' });
+    doc.text(`Generated: ${new Date().toLocaleString('en-IN', {dateStyle:'medium',timeStyle:'short'})}`, PW - 14, 16, { align: 'right' });
+    doc.text(`Total records: ${reports.length}`, PW - 14, 22, { align: 'right' });
+
+    // ── Summary Stats Band ────────────────────────────────────
+    const total = reports.length;
+    const pending  = reports.filter(r => r.status === 'pending').length;
+    const verified = reports.filter(r => r.status === 'verified').length;
+    const rejected = reports.filter(r => r.status === 'rejected').length;
+
+    const stats = [
+        { label: 'TOTAL', value: total,    color: [3, 105, 161] },
+        { label: 'PENDING', value: pending,  color: [180, 83, 9] },
+        { label: 'VERIFIED', value: verified, color: [4, 120, 87] },
+        { label: 'REJECTED', value: rejected, color: [185, 28, 28] },
+    ];
+    const boxW = 40, boxH = 16, startX = 14, statY = 32;
+    stats.forEach((s, i) => {
+        const bx = startX + i * (boxW + 4);
+        doc.setFillColor(...s.color);
+        doc.roundedRect(bx, statY, boxW, boxH, 2, 2, 'F');
+        doc.setTextColor(255, 255, 255);
+        doc.setFontSize(14); doc.setFont('helvetica', 'bold');
+        doc.text(String(s.value), bx + boxW / 2, statY + 9, { align: 'center' });
+        doc.setFontSize(6); doc.setFont('helvetica', 'normal');
+        doc.text(s.label, bx + boxW / 2, statY + 14, { align: 'center' });
+    });
+
+    // ── Table ─────────────────────────────────────────────────
+    const headers = ['Report ID', 'Reporter', 'Location', 'Hazard Type', 'Date', 'Severity', 'Status'];
+    const colW    = [35, 32, 45, 28, 38, 22, 22];
+    let y = 56;
+
+    // Header row
+    doc.setFillColor(15, 23, 42);
+    doc.rect(14, y - 5, PW - 28, 9, 'F');
+    doc.setTextColor(148, 163, 184);
+    doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+    let x = 14;
+    headers.forEach((h, i) => { doc.text(h, x + 2, y); x += colW[i]; });
+
+    // Data rows
+    doc.setFont('helvetica', 'normal');
+    const hazardEmoji = { flood:'🌊', tsunami:'⚠️', storm:'🌀', waves:'🌊', erosion:'🏖', other:'📍' };
+    reports.slice(0, 120).forEach((r, idx) => {
+        y += 8;
+        if (y > PH - 18) {
+            // Footer on current page
+            _pdfFooter(doc, PW, PH, idx);
+            doc.addPage();
+            y = 20;
+            // Repeat header
+            doc.setFillColor(15, 23, 42);
+            doc.rect(14, y - 5, PW - 28, 9, 'F');
+            doc.setTextColor(148, 163, 184);
+            doc.setFontSize(7); doc.setFont('helvetica', 'bold');
+            x = 14;
+            headers.forEach((h, i) => { doc.text(h, x + 2, y); x += colW[i]; });
+            doc.setFont('helvetica', 'normal');
+            y += 8;
+        }
+
+        // Alternating row bg
+        if (idx % 2 === 0) {
+            doc.setFillColor(244, 247, 252);
+            doc.rect(14, y - 5, PW - 28, 7.5, 'F');
+        }
+
+        const statusColor = r.status === 'verified' ? [4,120,87] : r.status === 'rejected' ? [185,28,28] : [180,83,9];
+        const severityColor = (r.severity==='high'||r.severity==='emergency') ? [185,28,28] : r.severity==='medium' ? [180,83,9] : [4,120,87];
+
+        const row = [
+            { text: String(r.id).slice(0,8)+'…', color: [71,85,105] },
+            { text: (r.reporter_name||'Anonymous').slice(0,18), color: [30,41,59] },
+            { text: (r.address||'Unknown').slice(0,24), color: [30,41,59] },
+            { text: (r.hazard_type||'other').toUpperCase().slice(0,12), color: [3,105,161] },
+            { text: formatTimestamp(r.created_at).slice(0,16), color: [71,85,105] },
+            { text: (r.severity||'N/A').slice(0,8), color: severityColor },
+            { text: (r.status||'pending').toUpperCase(), color: statusColor },
+        ];
+
+        x = 14;
+        doc.setFontSize(7);
+        row.forEach((cell, i) => {
+            doc.setTextColor(...cell.color);
+            doc.text(String(cell.text), x + 2, y);
+            x += colW[i];
+        });
+    });
+
+    _pdfFooter(doc, PW, PH);
+    doc.save(`samudra_hazard_report_${new Date().toISOString().slice(0,10)}.pdf`);
+}
+
+function _pdfFooter(doc, PW, PH) {
+    doc.setFillColor(6, 11, 24);
+    doc.rect(0, PH - 10, PW, 10, 'F');
+    doc.setTextColor(100, 116, 139);
+    doc.setFontSize(7); doc.setFont('helvetica', 'normal');
+    doc.text('Samudra Suraksha · INCOIS · Confidential Government Document', 14, PH - 4);
+    doc.setTextColor(16, 185, 129);
+    doc.text('incois.gov.in', PW - 14, PH - 4, { align: 'right' });
 }
 
 function openNewAlertModal() {
@@ -1091,11 +1360,12 @@ function applyMapFilter(filter) {
 
     const buttons = document.querySelectorAll('#map-filters button');
     buttons.forEach(btn => {
-        btn.classList.remove('bg-gov-accent', 'text-white');
+        // Support both old Tailwind classes and new chip/active design system
+        btn.classList.remove('active', 'bg-gov-accent', 'text-white');
         btn.classList.add('bg-gray-100', 'text-gray-700');
         if (btn.dataset.filter === filter) {
             btn.classList.remove('bg-gray-100', 'text-gray-700');
-            btn.classList.add('bg-gov-accent', 'text-white');
+            btn.classList.add('active', 'bg-gov-accent', 'text-white');
         }
     });
 
@@ -1634,6 +1904,14 @@ function setupEventListeners() {
         });
     }
 
+    // Apply saved dark mode on load (Tailwind needs class on <html>)
+    const saved = JSON.parse(localStorage.getItem('dashboardSettings') || '{}');
+    if (saved.darkMode) {
+        document.documentElement.classList.add('dark');
+        const dm = document.getElementById('darkMode');
+        if (dm) dm.checked = true;
+    }
+
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
     if (saveSettingsBtn) {
         saveSettingsBtn.addEventListener('click', () => {
@@ -1643,12 +1921,30 @@ function setupEventListeners() {
             const darkMode = document.getElementById('darkMode').checked;
             const mapStyle = document.getElementById('mapStyle').value;
 
+            // Apply dark mode on <html> — required for Tailwind dark: variants
+            document.documentElement.classList.toggle('dark', darkMode);
+
             localStorage.setItem('dashboardSettings', JSON.stringify({
                 emailNotif, pushNotif, smsNotif, darkMode, mapStyle
             }));
 
-            alert(`Settings saved:\nEmail: ${emailNotif}\nPush: ${pushNotif}\nSMS: ${smsNotif}\nDark Mode: ${darkMode}\nMap Style: ${mapStyle}`);
+            const toast = document.createElement('div');
+            toast.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;
+                background:#0b1325;color:white;padding:12px 20px;border-radius:10px;
+                font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.3);
+                display:flex;align-items:center;gap:8px;animation:fadeIn 200ms ease;`;
+            toast.innerHTML = '<span style="color:#10b981">✓</span> Settings saved';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2500);
         });
+
+        // Live preview on toggle — instant feedback
+        const dmToggle = document.getElementById('darkMode');
+        if (dmToggle) {
+            dmToggle.addEventListener('change', () => {
+                document.documentElement.classList.toggle('dark', dmToggle.checked);
+            });
+        }
     }
 
     const prevPage = document.getElementById('prevPage');
