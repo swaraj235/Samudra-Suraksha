@@ -4,6 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Samudra Suraksha - Modern Government Dashboard</title>
+    <script>
+        (function bootstrapTheme() {
+            try {
+                const settings = JSON.parse(localStorage.getItem('dashboardSettings') || '{}');
+                const mode = settings.themePreference || (settings.darkMode ? 'dark' : 'system');
+                const shouldUseDark = mode === 'dark' || (mode === 'system' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+                document.documentElement.classList.toggle('dark', !!shouldUseDark);
+            } catch (_) {}
+        })();
+    </script>
     
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -446,6 +456,33 @@
         html.dark .accordion-button { background-color: #111c33 !important; color: #e2e8f4 !important; }
         html.dark .accordion-body { background-color: #0b1325 !important; }
         html.dark #mobileMenuBtn { background-color: #111c33 !important; }
+
+        #welcome-strip {
+            background: linear-gradient(120deg, #0f172a 0%, #064e3b 45%, #134e4a 100%) !important;
+        }
+        .officer-avatar-ring {
+            width: 2.5rem;
+            height: 2.5rem;
+            min-width: 2.5rem;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #059669 0%, #0d9488 45%, #1e40af 100%);
+            border: 2px solid rgba(255, 255, 255, 0.95);
+            box-shadow: 0 2px 8px rgba(15, 23, 42, 0.15);
+        }
+        html.dark .officer-avatar-ring {
+            border-color: rgba(255, 255, 255, 0.12);
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .dashboard-header-wrap {
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        html.theme-transition *,
+        html.theme-transition *::before,
+        html.theme-transition *::after {
+            transition: background-color 180ms ease, border-color 180ms ease, color 180ms ease;
+        }
     </style>
     
     <script>
@@ -497,12 +534,17 @@
             <!-- User Profile -->
             <div class="px-6 py-4 border-b border-gray-200">
                 <div class="flex items-center space-x-3">
-                    <div class="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center">
-                        <i class="fas fa-user text-gray-600 text-sm"></i>
+                    <div id="officer-avatar-ring" class="officer-avatar-ring flex-shrink-0 flex items-center justify-center text-white font-bold text-sm" title="">
+                        <span id="officer-initials">GO</span>
                     </div>
-                    <div>
-                        <div class="font-medium text-sm" id="officer-name"></div>
-                        <div class="text-xs text-gray-500" id="region-display">Kerala Region</div>
+                    <div class="min-w-0 flex-1">
+                        <div class="font-medium text-sm truncate" id="officer-name"></div>
+                        <div class="text-[10px] uppercase tracking-wide text-gray-400 font-semibold mt-0.5">State</div>
+                        <div class="text-xs text-gray-500 truncate" id="region-display">—</div>
+                        <div class="text-xs text-gov-accent font-medium mt-1 flex items-center gap-1.5">
+                            <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" style="box-shadow: 0 0 0 2px rgba(16,185,129,0.25);"></span>
+                            Verified session
+                        </div>
                     </div>
                 </div>
             </div>
@@ -561,13 +603,16 @@
     <!-- Main Content -->
     <div class="lg:ml-64 min-h-screen">
         <!-- Header -->
-        <header class="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 sticky top-0 z-30">
-            <div class="flex items-center justify-between">
-                <div>
-                    <h2 class="text-2xl font-bold text-gov-primary" id="pageTitle">Regional Dashboard</h2>
-                    <p class="text-gray-600" id="pageSubtitle">Monitor coastal hazards and safety reports</p>
+        <header class="bg-white/80 backdrop-blur-md border-b border-gray-200 px-6 py-4 sticky top-0 z-30 shadow-sm">
+            <div class="flex flex-col gap-4 dashboard-header-wrap lg:flex-row lg:items-start lg:justify-between">
+                <div class="min-w-0">
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <h2 class="text-2xl font-bold text-gov-primary" id="pageTitle">Regional Dashboard</h2>
+                        <span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200/80">IST</span>
+                    </div>
+                    <p class="text-gray-600 mt-1" id="pageSubtitle">Monitor coastal hazards and safety reports</p>
                 </div>
-                <div class="flex items-center space-x-4">
+                <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-3">
                     <!-- Quick Actions -->
                     <div class="flex items-center space-x-2">
                         <button onclick="openNewAlertModal()" class="px-4 py-2 bg-gov-danger text-white rounded-lg hover:bg-red-600 transition-colors">
@@ -603,6 +648,26 @@
         
         <!-- Dashboard Content -->
         <main class="p-6">
+            <!-- Officer welcome (filled by dashboard33.js after profile load) -->
+            <div id="welcome-strip" class="hidden mb-8 px-5 py-4 rounded-2xl bg-gradient-to-r from-slate-900 via-emerald-900 to-teal-900 text-white shadow-lg border border-white/10">
+                <div class="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+                    <div>
+                        <p class="text-xs uppercase tracking-wider text-emerald-300/90 font-semibold">Operations console</p>
+                        <p class="text-lg font-semibold mt-1"><span id="welcome-officer-label">—</span></p>
+                        <p class="text-sm text-white/75 mt-1 max-w-2xl">Live coastal hazard monitoring, citizen reports, and alert workflows. Data refreshes from Supabase in real time.</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-3 text-sm">
+                        <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 border border-white/10">
+                            <i class="fas fa-shield-halved text-emerald-400"></i>
+                            Gov portal
+                        </span>
+                        <span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 border border-white/10">
+                            <i class="fas fa-satellite-dish text-sky-300"></i>
+                            Realtime feeds
+                        </span>
+                    </div>
+                </div>
+            </div>
             <!-- Dashboard Tab -->
             <div id="dashboard-tab" class="tab-content">
                 <!-- Stats Cards -->
@@ -976,76 +1041,95 @@
             <!-- Settings Tab -->
             <div id="settings-tab" class="tab-content hidden">
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                        <h3 class="text-xl font-bold text-gov-primary mb-4">Profile Settings</h3>
-                        <form class="space-y-4" id="profileForm">
+                    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 lg:p-8">
+                        <div class="flex items-start justify-between gap-4 mb-6">
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
-                                <input type="text" id="profileName" value="" placeholder="Your full name" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
+                                <h3 class="text-xl font-bold text-gov-primary">Profile</h3>
+                                <p class="text-sm text-gray-500 mt-1">Updates your officer record in <code class="text-xs bg-gray-100 px-1 rounded">users_metadata</code> (department and state).</p>
+                            </div>
+                            <span class="shrink-0 text-xs font-semibold uppercase tracking-wide text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded">Gov portal</span>
+                        </div>
+                        <form class="space-y-5" id="profileForm">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2" for="profileDepartment">Department / unit name</label>
+                                <input type="text" id="profileDepartment" value="" placeholder="e.g. CSE (DS), Coastal Disaster Cell" autocomplete="organization" class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Email</label>
-                                <input type="email" id="profileEmail" value="" placeholder="Your official email" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent" readonly>
+                                <label class="block text-sm font-medium text-gray-700 mb-2" for="profileEmail">Email</label>
+                                <input type="email" id="profileEmail" value="" placeholder="Your official email" class="w-full px-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-600 cursor-not-allowed" readonly title="Email is managed in Supabase Auth">
                             </div>
                             <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Department</label>
-                                <input type="text" id="profileDepartment" value="" placeholder="Your department" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Region</label>
-                                <select id="profileRegion" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
-                                    <option>Kerala</option>
-                                    <option>Tamil Nadu</option>
-                                    <option>Andhra Pradesh</option>
-                                    <option>Goa</option>
+                                <label class="block text-sm font-medium text-gray-700 mb-2" for="profileRegion">State</label>
+                                <select id="profileRegion" name="state" class="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent bg-white">
+                                    <!-- Options filled by dashboard33.js (all states & UTs) -->
                                 </select>
+                                <p class="text-xs text-gray-500 mt-1.5">Stored as <strong>state</strong> in the database. Must match one of the listed states (case is normalized automatically).</p>
                             </div>
-                            <button type="submit" class="w-full py-2 bg-gov-accent text-white rounded-lg hover:bg-emerald-600 transition-colors">Update Profile</button>
+                            <button type="submit" class="w-full py-3 bg-gov-accent text-white font-semibold rounded-lg hover:bg-emerald-600 transition-colors shadow-sm">Save profile</button>
                         </form>
                     </div>
-                    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6">
-                        <h3 class="text-xl font-bold text-gov-primary mb-4">Notification Settings</h3>
-                        <div class="space-y-4">
-                            <div class="flex items-center justify-between">
-                                <span class="text-gray-700">Email Notifications</span>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" id="emailNotif" class="sr-only peer" checked>
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                                </label>
+                    <div class="bg-white rounded-2xl shadow-lg border border-gray-100 p-6 lg:p-8">
+                        <h3 class="text-xl font-bold text-gov-primary mb-1">Preferences</h3>
+                        <p class="text-sm text-gray-500 mb-6">Saved in this browser only (not sent to the server).</p>
+                        <div class="space-y-5">
+                            <div class="rounded-xl border border-gray-200 p-4">
+                                <h4 class="text-sm font-semibold text-gov-primary mb-3">Notification channels</h4>
+                                <div class="space-y-3">
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-700">Email Notifications</span>
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="emailNotif" class="sr-only peer" checked>
+                                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                                        </label>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-700">Push Notifications</span>
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="pushNotif" class="sr-only peer" checked>
+                                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                                        </label>
+                                    </div>
+                                    <div class="flex items-center justify-between">
+                                        <span class="text-gray-700">SMS Alerts</span>
+                                        <label class="relative inline-flex items-center cursor-pointer">
+                                            <input type="checkbox" id="smsNotif" class="sr-only peer">
+                                            <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                                        </label>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-gray-700">Push Notifications</span>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" id="pushNotif" class="sr-only peer" checked>
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                                </label>
+                            <div class="rounded-xl border border-gray-200 p-4 space-y-4">
+                                <h4 class="text-sm font-semibold text-gov-primary">Appearance & map</h4>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Theme preference</label>
+                                    <select id="themePreference" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
+                                        <option value="system">System (auto)</option>
+                                        <option value="light">Light</option>
+                                        <option value="dark">Dark</option>
+                                    </select>
+                                    <p class="text-xs text-gray-500 mt-1.5">System mode follows your OS preference and avoids white-flash on page load.</p>
+                                </div>
+                                <div class="flex items-center justify-between">
+                                    <span class="text-gray-700">Dark Mode quick toggle</span>
+                                    <label class="relative inline-flex items-center cursor-pointer">
+                                        <input type="checkbox" id="darkMode" class="sr-only peer">
+                                        <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
+                                    </label>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-700 mb-2">Map Style</label>
+                                    <select id="mapStyle" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
+                                        <option value="streets">Streets</option>
+                                        <option value="satellite">Satellite</option>
+                                        <option value="terrain">Terrain</option>
+                                    </select>
+                                </div>
                             </div>
-                            <div class="flex items-center justify-between">
-                                <span class="text-gray-700">SMS Alerts</span>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" id="smsNotif" class="sr-only peer">
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                                </label>
+                            <div class="flex flex-col sm:flex-row gap-3">
+                                <button id="saveSettingsBtn" class="w-full py-2.5 bg-gov-accent text-white rounded-lg hover:bg-emerald-600 transition-colors font-semibold">Save Settings</button>
+                                <button id="resetSettingsBtn" class="w-full py-2.5 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-semibold">Reset Defaults</button>
                             </div>
-                        </div>
-                        <div class="mt-6 space-y-4">
-                            <h4 class="text-lg font-bold text-gov-primary">System Settings</h4>
-                            <div class="flex items-center justify-between">
-                                <span class="text-gray-700">Dark Mode</span>
-                                <label class="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" id="darkMode" class="sr-only peer">
-                                    <div class="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-emerald-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-emerald-600"></div>
-                                </label>
-                            </div>
-                            <div>
-                                <label class="block text-sm font-medium text-gray-700 mb-2">Map Style</label>
-                                <select id="mapStyle" class="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gov-accent focus:border-transparent">
-                                    <option value="streets">Streets</option>
-                                    <option value="satellite">Satellite</option>
-                                    <option value="terrain">Terrain</option>
-                                </select>
-                            </div>
-                            <button id="saveSettingsBtn" class="w-full py-2 bg-gov-accent text-white rounded-lg hover:bg-emerald-600 transition-colors">Save Settings</button>
+                            <p id="settingsHint" class="text-xs text-gray-500">Changes are previewed immediately for theme and stored after clicking save.</p>
                         </div>
                     </div>
                 </div>
@@ -1197,6 +1281,11 @@
         html.dark .accordion-body { background-color: #0b1325 !important; }
         html.dark #dashboardLoading { background: rgba(6,11,24,0.97) !important; }
         html.dark #mobileMenuBtn { background-color: #111c33 !important; }
+        html.dark header .bg-emerald-100 {
+            background-color: rgba(6, 78, 59, 0.5) !important;
+            color: #a7f3d0 !important;
+            border-color: rgba(16, 185, 129, 0.35) !important;
+        }
         html.dark .hover\:bg-gray-50:hover,
         html.dark .hover\:bg-gray-100:hover { background-color: rgba(255,255,255,0.05) !important; }
         html.dark .dataTables_wrapper { color: #e2e8f0 !important; }

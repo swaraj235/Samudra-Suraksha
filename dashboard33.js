@@ -17,7 +17,82 @@ let reportChannel, alertChannel;
 const SUPABASE_URL = 'https://mnejfugdushmrwzocxlx.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uZWpmdWdkdXNobXJ3em9jeGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5Mjg1ODMsImV4cCI6MjA3MzUwNDU4M30.XsAaOz53omvyBB9yPBLuTjmSYBrY4GBinqKbYPrup8w';
 const { createClient } = supabase;
-const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    auth: {
+        flowType: 'pkce',
+        detectSessionInUrl: true,
+        persistSession: true,
+        storage: localStorage
+    }
+});
+
+// All states & UTs for Settings → `users_metadata.state` (Title Case; DB may use any casing)
+const INDIAN_STATES_AND_UTS = [
+    'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat',
+    'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra',
+    'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim',
+    'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+    'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu',
+    'Delhi', 'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry'
+];
+
+function canonicalIndianState(stateRaw) {
+    if (stateRaw == null || String(stateRaw).trim() === '') return '';
+    let s = String(stateRaw).trim().replace(/\s+/g, ' ');
+    const lower = s.toLowerCase();
+    const aliases = {
+        orissa: 'Odisha',
+        pondicherry: 'Puducherry',
+        'daman & diu': 'Dadra and Nagar Haveli and Daman and Diu',
+        'dadra and nagar haveli and daman and diu': 'Dadra and Nagar Haveli and Daman and Diu'
+    };
+    if (aliases[lower]) return aliases[lower];
+    const found = INDIAN_STATES_AND_UTS.find(x => x.toLowerCase() === lower);
+    if (found) return found;
+    if (s === s.toUpperCase() && s.length > 1) {
+        const titled = s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+        const found2 = INDIAN_STATES_AND_UTS.find(x => x.toLowerCase() === titled.toLowerCase());
+        if (found2) return found2;
+    }
+    return s;
+}
+
+function populateProfileStateSelect(selectEl) {
+    if (!selectEl) return;
+    selectEl.innerHTML = '';
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = 'Select state';
+    ph.disabled = true;
+    ph.hidden = true;
+    selectEl.appendChild(ph);
+    INDIAN_STATES_AND_UTS.forEach(name => {
+        const o = document.createElement('option');
+        o.value = name;
+        o.textContent = name;
+        selectEl.appendChild(o);
+    });
+}
+
+function setProfileStateSelectValue(selectEl, stateFromDb) {
+    if (!selectEl) return;
+    populateProfileStateSelect(selectEl);
+    const canonical = canonicalIndianState(stateFromDb);
+    if (!canonical) {
+        selectEl.value = '';
+        return;
+    }
+    const match = INDIAN_STATES_AND_UTS.find(x => x.toLowerCase() === canonical.toLowerCase());
+    if (match) {
+        selectEl.value = match;
+        return;
+    }
+    const o = document.createElement('option');
+    o.value = canonical;
+    o.textContent = canonical + ' (from profile)';
+    selectEl.appendChild(o);
+    selectEl.value = canonical;
+}
 
 // Cache for reverse geocoding
 const geocodeCache = new Map();
@@ -75,7 +150,7 @@ async function reverseGeocode(lat, lng) {
 supabaseClient.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT' || !session) {
         localStorage.removeItem('samudra_suraksha_user');
-        window.location.href = 'auth.html';
+        window.location.href = '/';
     }
 });
 
@@ -98,11 +173,11 @@ async function checkDashboardAuth() {
         const { data: { session }, error: sessionError } = await supabaseClient.auth.getSession();
         if (sessionError || !session) {
             alert('Please log in to access the dashboard.');
-            window.location.href = 'auth.html';
+            window.location.href = '/';
             return null;
         }
 
-        let user = session.user;
+        let user = { ...session.user };
         const userData = localStorage.getItem('samudra_suraksha_user');
         if (userData) {
             try {
@@ -113,18 +188,35 @@ async function checkDashboardAuth() {
             }
         }
 
+        // OAuth (and fresh sessions) may not have role in localStorage — load from users_metadata (no schema change)
         if (!user.role || user.role !== 'gov_portal') {
-            alert('Unauthorized access. Government portal role required.');
-            window.location.href = 'auth.html';
-            return null;
+            const { data: row, error: metaErr } = await supabaseClient
+                .from('users_metadata')
+                .select('role, state, department_name')
+                .eq('id', session.user.id)
+                .maybeSingle();
+
+            if (metaErr || !row || row.role !== 'gov_portal') {
+                alert('Unauthorized access. Government portal role required.');
+                await supabaseClient.auth.signOut();
+                window.location.href = '/';
+                return null;
+            }
+            user = { ...user, ...row };
+            localStorage.setItem('samudra_suraksha_user', JSON.stringify({
+                email: user.email,
+                id: user.id,
+                state: row.state,
+                department_name: row.department_name,
+                role: row.role
+            }));
         }
 
-        // Don't set hardcoded values here - let fetchUserMetadata handle it
         return user;
     } catch (error) {
         console.error('Authentication error:', error);
         alert('Authentication error. Please log in again.');
-        window.location.href = 'auth.html';
+        window.location.href = '/';
         return null;
     }
 }
@@ -247,6 +339,7 @@ function showTab(tabName) {
     if (tabName === 'hotspots') {
         waitForMapContainer('hotspot-map', initializeHotspotMap);
         updateCharts();
+        applyDashboardChartTheme();
     } else if (tabName === 'alerts') {
         fetchAlerts();
     } else if (tabName === 'reports') {
@@ -294,6 +387,36 @@ function waitForMapContainer(containerId, callback) {
     });
 }
 
+/** Sidebar avatar initials + welcome strip (OAuth-friendly: uses user_metadata name when present). */
+function updateOfficerAvatar(user, metaRow) {
+    const initialsEl = document.getElementById('officer-initials');
+    const ring = document.getElementById('officer-avatar-ring');
+    if (!initialsEl || !user) return;
+
+    const meta = user.user_metadata || {};
+    const fullName = (meta.full_name || meta.name || '').trim();
+    let initials = 'GO';
+    if (fullName) {
+        const parts = fullName.split(/\s+/).filter(Boolean);
+        initials = parts.length >= 2
+            ? (parts[0][0] + parts[parts.length - 1][0]).toUpperCase()
+            : (parts[0].slice(0, 2) || 'GO').toUpperCase();
+    } else if (user.email) {
+        const local = user.email.split('@')[0] || '';
+        initials = (local.slice(0, 2) || 'GO').toUpperCase();
+    }
+    initialsEl.textContent = initials;
+    if (ring) ring.setAttribute('title', user.email || '');
+
+    const strip = document.getElementById('welcome-strip');
+    const welcomeLabel = document.getElementById('welcome-officer-label');
+    if (strip && welcomeLabel) {
+        const label = (metaRow && metaRow.department_name) || fullName || user.email || 'Officer';
+        welcomeLabel.textContent = label;
+        strip.classList.remove('hidden');
+    }
+}
+
 async function fetchUserMetadata() {
     try {
         const { data: { user }, error: userError } = await supabaseClient.auth.getUser();
@@ -313,10 +436,10 @@ async function fetchUserMetadata() {
 
         if (error) {
             console.error('Error fetching user metadata:', error);
-            // If error or no metadata found, use user email as fallback
             document.getElementById('officer-name').textContent = user.email || 'Government Officer';
             document.getElementById('region-display').textContent = 'INCOIS';
             document.getElementById('pageTitle').textContent = 'Regional Dashboard';
+            updateOfficerAvatar(user, null);
             return;
         }
 
@@ -332,19 +455,12 @@ async function fetchUserMetadata() {
             document.getElementById('region-display').textContent = regionDisplay;
 
             // Also populate the Settings profile form
-            const pName = document.getElementById('profileName');
             const pEmail = document.getElementById('profileEmail');
             const pDept = document.getElementById('profileDepartment');
             const pRegion = document.getElementById('profileRegion');
-            if (pName) pName.value = data.department_name || '';
-            if (pEmail) pEmail.value = user.email || '';
             if (pDept) pDept.value = data.department_name || '';
-            if (pRegion) {
-                const stateVal = data.state || '';
-                Array.from(pRegion.options).forEach(opt => {
-                    if (opt.value === stateVal || opt.text === stateVal) opt.selected = true;
-                });
-            }
+            if (pEmail) pEmail.value = user.email || '';
+            setProfileStateSelectValue(pRegion, data.state);
 
             // Only update page title if we're on dashboard tab
             if (currentTab === 'dashboard') {
@@ -353,6 +469,7 @@ async function fetchUserMetadata() {
 
             // Store the complete user data in localStorage for future use
             localStorage.setItem('samudra_suraksha_user', JSON.stringify({ ...user, ...data }));
+            updateOfficerAvatar(user, data);
             
             console.log('UI updated with:', { officerName, regionDisplay, dashboardTitle });
         } else {
@@ -363,6 +480,7 @@ async function fetchUserMetadata() {
             if (currentTab === 'dashboard') {
                 document.getElementById('pageTitle').textContent = 'Regional Dashboard';
             }
+            updateOfficerAvatar(user, null);
         }
     } catch (error) {
         console.error('Failed to load user metadata:', error);
@@ -375,6 +493,7 @@ async function fetchUserMetadata() {
                 if (currentTab === 'dashboard') {
                     document.getElementById('pageTitle').textContent = 'Regional Dashboard';
                 }
+                updateOfficerAvatar(user, null);
             }
         } catch (fallbackError) {
             console.error('Fallback also failed:', fallbackError);
@@ -662,18 +781,21 @@ async function createNewAlert() {
  */
 async function sendFCMAlert(alertData) {
     try {
-        const response = await fetch('/api/send-alert', {
+        const response = await fetch('/api/send-fcm-alert', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 title: alertData.title,
-                body: alertData.description,
+                description: alertData.description,
                 severity: alertData.severity,
-                region: alertData.target_region || null,
-                alert_id: alertData.id
+                target_region: alertData.target_region || 'All Regions'
             })
         });
-        const result = await response.json();
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            console.warn('FCM HTTP error:', response.status, result);
+            return false;
+        }
         if (result.success) {
             console.log('FCM alert sent successfully:', result);
             return true;
@@ -695,12 +817,16 @@ async function logAuditAction(action, targetId, metadata = {}) {
     try {
         const { data: { user } } = await supabaseClient.auth.getUser();
         if (!user) return;
-        await supabaseClient.from('audit_log').insert({
+        const { error } = await supabaseClient.from('audit_log').insert({
             action,
             actor_id: user.id,
             target_id: targetId,
             metadata: JSON.stringify(metadata)
         });
+        if (error) {
+            console.warn('Audit log insert failed (non-blocking):', error.message);
+            return;
+        }
         console.log(`Audit logged: ${action} on ${targetId}`);
     } catch (e) {
         console.warn('Audit log failed (non-blocking):', e.message);
@@ -1802,6 +1928,84 @@ function updateCharts() {
     }
 }
 
+function showToast(message, type = 'success') {
+    const tone = type === 'error'
+        ? { bg: '#7f1d1d', icon: '#fca5a5', symbol: '⚠' }
+        : { bg: '#0b1325', icon: '#10b981', symbol: '✓' };
+    const toast = document.createElement('div');
+    toast.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;
+        background:${tone.bg};color:white;padding:12px 20px;border-radius:10px;
+        font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.3);
+        display:flex;align-items:center;gap:8px;`;
+    toast.innerHTML = `<span style="color:${tone.icon}">${tone.symbol}</span> ${message}`;
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 2500);
+}
+
+function getSavedDashboardSettings() {
+    try {
+        return JSON.parse(localStorage.getItem('dashboardSettings') || '{}');
+    } catch (_) {
+        return {};
+    }
+}
+
+function resolveThemeIsDark(themePreference) {
+    if (themePreference === 'dark') return true;
+    if (themePreference === 'light') return false;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function applyDashboardChartTheme() {
+    const isDark = document.documentElement.classList.contains('dark');
+    const text = isDark ? '#cbd5e1' : '#334155';
+    const grid = isDark ? 'rgba(148,163,184,0.18)' : '#e5e7eb';
+
+    if (hazardPieChart) {
+        if (hazardPieChart.options.plugins?.legend?.labels) hazardPieChart.options.plugins.legend.labels.color = text;
+        if (hazardPieChart.options.plugins?.title) hazardPieChart.options.plugins.title.color = text;
+        hazardPieChart.update('none');
+    }
+    if (comparisonBarChart) {
+        if (comparisonBarChart.options.plugins?.legend?.labels) comparisonBarChart.options.plugins.legend.labels.color = text;
+        if (comparisonBarChart.options.plugins?.title) comparisonBarChart.options.plugins.title.color = text;
+        if (comparisonBarChart.options.scales?.x?.ticks) comparisonBarChart.options.scales.x.ticks.color = text;
+        if (comparisonBarChart.options.scales?.x?.title) comparisonBarChart.options.scales.x.title.color = text;
+        if (comparisonBarChart.options.scales?.y?.ticks) comparisonBarChart.options.scales.y.ticks.color = text;
+        if (comparisonBarChart.options.scales?.y?.title) comparisonBarChart.options.scales.y.title.color = text;
+        if (comparisonBarChart.options.scales?.y?.grid) comparisonBarChart.options.scales.y.grid.color = grid;
+        comparisonBarChart.update('none');
+    }
+    if (trendLineChart) {
+        if (trendLineChart.options.plugins?.legend?.labels) trendLineChart.options.plugins.legend.labels.color = text;
+        if (trendLineChart.options.plugins?.title) trendLineChart.options.plugins.title.color = text;
+        if (trendLineChart.options.scales?.x?.ticks) trendLineChart.options.scales.x.ticks.color = text;
+        if (trendLineChart.options.scales?.y?.ticks) trendLineChart.options.scales.y.ticks.color = text;
+        if (trendLineChart.options.scales?.y?.grid) trendLineChart.options.scales.y.grid.color = grid;
+        trendLineChart.update('none');
+    }
+}
+
+function applyThemePreference(themePreference = 'system', animate = true) {
+    const html = document.documentElement;
+    if (animate) {
+        html.classList.add('theme-transition');
+        setTimeout(() => html.classList.remove('theme-transition'), 220);
+    }
+    const shouldDark = resolveThemeIsDark(themePreference);
+    html.classList.toggle('dark', shouldDark);
+
+    const themeSelect = document.getElementById('themePreference');
+    if (themeSelect && themeSelect.value !== themePreference) themeSelect.value = themePreference;
+    const darkToggle = document.getElementById('darkMode');
+    if (darkToggle) darkToggle.checked = shouldDark;
+
+    applyDashboardChartTheme();
+    window.dispatchEvent(new CustomEvent('dashboard-theme-changed', {
+        detail: { themePreference, isDark: shouldDark }
+    }));
+}
+
 function setupEventListeners() {
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
@@ -1879,23 +2083,37 @@ function setupEventListeners() {
     if (profileForm) {
         profileForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const name = document.getElementById('profileName').value;
-            const email = document.getElementById('profileEmail').value;
-            const department = document.getElementById('profileDepartment').value;
-            const region = document.getElementById('profileRegion').value;
+            const department = document.getElementById('profileDepartment').value.trim();
+            const state = document.getElementById('profileRegion').value.trim();
+
+            if (!state) {
+                alert('Please select a state.');
+                return;
+            }
 
             try {
+                const { data: { user: u } } = await supabaseClient.auth.getUser();
+                if (!u) throw new Error('Not signed in');
+
                 const { error } = await supabaseClient
                     .from('users_metadata')
                     .update({
                         department_name: department,
-                        state: region
+                        state: state
                     })
-                    .eq('id', (await supabaseClient.auth.getUser()).data.user.id);
+                    .eq('id', u.id);
 
                 if (error) throw error;
-                await supabaseClient.auth.updateUser({ email });
-                alert('Profile updated successfully.');
+
+                localStorage.setItem('samudra_suraksha_user', JSON.stringify({
+                    email: u.email,
+                    id: u.id,
+                    state,
+                    department_name: department,
+                    role: 'gov_portal'
+                }));
+
+                showToast('Profile saved successfully.');
                 await fetchUserMetadata();
             } catch (error) {
                 console.error('Error updating profile:', error);
@@ -1903,48 +2121,89 @@ function setupEventListeners() {
             }
         });
     }
+    const savedSettings = getSavedDashboardSettings();
+    const emailNotifEl = document.getElementById('emailNotif');
+    const pushNotifEl = document.getElementById('pushNotif');
+    const smsNotifEl = document.getElementById('smsNotif');
+    const mapStyleEl = document.getElementById('mapStyle');
+    const themePreferenceEl = document.getElementById('themePreference');
+    const darkModeEl = document.getElementById('darkMode');
+    const settingsHint = document.getElementById('settingsHint');
 
-    // Apply saved dark mode on load (Tailwind needs class on <html>)
-    const saved = JSON.parse(localStorage.getItem('dashboardSettings') || '{}');
-    if (saved.darkMode) {
-        document.documentElement.classList.add('dark');
-        const dm = document.getElementById('darkMode');
-        if (dm) dm.checked = true;
+    if (emailNotifEl) emailNotifEl.checked = savedSettings.emailNotif !== false;
+    if (pushNotifEl) pushNotifEl.checked = savedSettings.pushNotif !== false;
+    if (smsNotifEl) smsNotifEl.checked = !!savedSettings.smsNotif;
+    if (mapStyleEl && savedSettings.mapStyle) mapStyleEl.value = savedSettings.mapStyle;
+
+    const initialThemePreference = savedSettings.themePreference || (savedSettings.darkMode ? 'dark' : 'system');
+    applyThemePreference(initialThemePreference, false);
+
+    if (themePreferenceEl) {
+        themePreferenceEl.value = initialThemePreference;
+        themePreferenceEl.addEventListener('change', () => {
+            applyThemePreference(themePreferenceEl.value, true);
+            if (settingsHint) settingsHint.textContent = `Theme preview: ${themePreferenceEl.value}. Click save to persist.`;
+        });
+    }
+    if (darkModeEl) {
+        darkModeEl.addEventListener('change', () => {
+            const quickMode = darkModeEl.checked ? 'dark' : 'light';
+            if (themePreferenceEl) themePreferenceEl.value = quickMode;
+            applyThemePreference(quickMode, true);
+            if (settingsHint) settingsHint.textContent = 'Quick toggle set an explicit theme mode. Click save to persist.';
+        });
+    }
+
+    const systemTheme = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    if (systemTheme && systemTheme.addEventListener) {
+        systemTheme.addEventListener('change', () => {
+            const activePreference = (document.getElementById('themePreference')?.value || 'system');
+            if (activePreference === 'system') applyThemePreference('system', false);
+        });
     }
 
     const saveSettingsBtn = document.getElementById('saveSettingsBtn');
     if (saveSettingsBtn) {
         saveSettingsBtn.addEventListener('click', () => {
-            const emailNotif = document.getElementById('emailNotif').checked;
-            const pushNotif = document.getElementById('pushNotif').checked;
-            const smsNotif = document.getElementById('smsNotif').checked;
-            const darkMode = document.getElementById('darkMode').checked;
-            const mapStyle = document.getElementById('mapStyle').value;
-
-            // Apply dark mode on <html> — required for Tailwind dark: variants
-            document.documentElement.classList.toggle('dark', darkMode);
-
-            localStorage.setItem('dashboardSettings', JSON.stringify({
-                emailNotif, pushNotif, smsNotif, darkMode, mapStyle
-            }));
-
-            const toast = document.createElement('div');
-            toast.style.cssText = `position:fixed;bottom:24px;right:24px;z-index:9999;
-                background:#0b1325;color:white;padding:12px 20px;border-radius:10px;
-                font-size:13px;font-weight:600;box-shadow:0 8px 24px rgba(0,0,0,0.3);
-                display:flex;align-items:center;gap:8px;animation:fadeIn 200ms ease;`;
-            toast.innerHTML = '<span style="color:#10b981">✓</span> Settings saved';
-            document.body.appendChild(toast);
-            setTimeout(() => toast.remove(), 2500);
+            const themePreference = (themePreferenceEl?.value || (darkModeEl?.checked ? 'dark' : 'light'));
+            const darkMode = resolveThemeIsDark(themePreference);
+            const next = {
+                emailNotif: emailNotifEl ? emailNotifEl.checked : true,
+                pushNotif: pushNotifEl ? pushNotifEl.checked : true,
+                smsNotif: smsNotifEl ? smsNotifEl.checked : false,
+                themePreference,
+                darkMode,
+                mapStyle: mapStyleEl ? mapStyleEl.value : 'streets'
+            };
+            localStorage.setItem('dashboardSettings', JSON.stringify(next));
+            applyThemePreference(themePreference, false);
+            if (settingsHint) settingsHint.textContent = `Saved. Theme: ${themePreference}, Map: ${next.mapStyle}.`;
+            showToast('Settings saved');
         });
+    }
 
-        // Live preview on toggle — instant feedback
-        const dmToggle = document.getElementById('darkMode');
-        if (dmToggle) {
-            dmToggle.addEventListener('change', () => {
-                document.documentElement.classList.toggle('dark', dmToggle.checked);
-            });
-        }
+    const resetSettingsBtn = document.getElementById('resetSettingsBtn');
+    if (resetSettingsBtn) {
+        resetSettingsBtn.addEventListener('click', () => {
+            const defaults = {
+                emailNotif: true,
+                pushNotif: true,
+                smsNotif: false,
+                themePreference: 'system',
+                darkMode: resolveThemeIsDark('system'),
+                mapStyle: 'streets'
+            };
+            localStorage.setItem('dashboardSettings', JSON.stringify(defaults));
+            if (emailNotifEl) emailNotifEl.checked = defaults.emailNotif;
+            if (pushNotifEl) pushNotifEl.checked = defaults.pushNotif;
+            if (smsNotifEl) smsNotifEl.checked = defaults.smsNotif;
+            if (mapStyleEl) mapStyleEl.value = defaults.mapStyle;
+            if (themePreferenceEl) themePreferenceEl.value = defaults.themePreference;
+            applyThemePreference(defaults.themePreference, true);
+            if (settingsHint) settingsHint.textContent = 'Preferences reset to defaults.';
+            showToast('Settings reset');
+        });
+    }
     }
 
     const prevPage = document.getElementById('prevPage');
@@ -1978,7 +2237,7 @@ function refreshData() {
             await Promise.all([fetchReports(), fetchAlerts()]);
             refreshBtn.disabled = false;
             refreshIcon.classList.remove('fa-spin');
-            alert('Data refreshed successfully.');
+            showToast('Data refreshed');
         }, 1000);
     }
 }
@@ -1989,7 +2248,7 @@ async function logout() {
         const { error } = await supabaseClient.auth.signOut();
         if (error) throw error;
         localStorage.removeItem('samudra_suraksha_user');
-        window.location.href = 'auth.html';
+        window.location.href = '/';
     } catch (error) {
         console.error('Logout error:', error);
         alert('Failed to log out: ' + error.message);

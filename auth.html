@@ -550,10 +550,9 @@
             <div class="row justify-content-center">
                 <div class="col-lg-5 col-md-7">
                     <div class="auth-card">
-                        <!-- Tabs -->
                         <div class="auth-tabs d-flex">
                             <button class="tab-button active" id="loginTab" onclick="switchTab('login')">
-                                <i class="fas fa-sign-in-alt me-2"></i>Login
+                                <i class="fas fa-sign-in-alt me-2"></i>Sign in
                             </button>
                             <button class="tab-button" id="registerTab" onclick="switchTab('register')">
                                 <i class="fas fa-user-plus me-2"></i>Register
@@ -563,10 +562,10 @@
                         <!-- Error Alert -->
                         <div id="errorAlert" class="alert alert-error" style="display: none;"></div>
 
-                        <!-- Login Form -->
+                        <!-- Email / password sign-in (same page; tab labelled Sign in) -->
                         <div id="loginForm" class="form-container">
-                            <h2 class="form-title">Welcome Back</h2>
-                            <p class="form-subtitle">Access the government disaster management portal</p>
+                            <h2 class="form-title">Welcome back</h2>
+                            <p class="form-subtitle">Official email and password</p>
 
                             <form id="authForm">
                                 <div class="form-group">
@@ -579,20 +578,11 @@
                                 </div>
 
                                 <div class="form-group">
-                                    <label class="form-label">Department State</label>
+                                    <label class="form-label">State</label>
                                     <div class="input-group">
                                         <i class="fas fa-map-marker-alt input-icon"></i>
                                         <select class="form-control" name="state" required>
                                             <option value="">Select your state</option>
-                                            <option value="Andhra Pradesh">Andhra Pradesh</option>
-                                            <option value="Goa">Goa</option>
-                                            <option value="Gujarat">Gujarat</option>
-                                            <option value="Karnataka">Karnataka</option>
-                                            <option value="Kerala">Kerala</option>
-                                            <option value="Maharashtra">Maharashtra</option>
-                                            <option value="Odisha">Odisha</option>
-                                            <option value="Tamil Nadu">Tamil Nadu</option>
-                                            <option value="West Bengal">West Bengal</option>
                                         </select>
                                     </div>
                                 </div>
@@ -659,15 +649,6 @@
                                         <i class="fas fa-map-marker-alt input-icon"></i>
                                         <select class="form-control" name="state" required>
                                             <option value="">Select your state</option>
-                                            <option value="Andhra Pradesh">Andhra Pradesh</option>
-                                            <option value="Goa">Goa</option>
-                                            <option value="Gujarat">Gujarat</option>
-                                            <option value="Karnataka">Karnataka</option>
-                                            <option value="Kerala">Kerala</option>
-                                            <option value="Maharashtra">Maharashtra</option>
-                                            <option value="Odisha">Odisha</option>
-                                            <option value="Tamil Nadu">Tamil Nadu</option>
-                                            <option value="West Bengal">West Bengal</option>
                                         </select>
                                     </div>
                                 </div>
@@ -758,26 +739,58 @@
             const supabase = window.supabase.createClient(
                 'https://mnejfugdushmrwzocxlx.supabase.co',
                 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1uZWpmdWdkdXNobXJ3em9jeGx4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTc5Mjg1ODMsImV4cCI6MjA3MzUwNDU4M30.XsAaOz53omvyBB9yPBLuTjmSYBrY4GBinqKbYPrup8w',
-                { auth: { debug: true } }
+                { auth: { persistSession: true, storage: localStorage, debug: false } }
             );
 
-            // Check auth status on page load
+            const INDIAN_STATES_AUTH = [
+                'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh', 'Goa', 'Gujarat',
+                'Haryana', 'Himachal Pradesh', 'Jharkhand', 'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra',
+                'Manipur', 'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab', 'Rajasthan', 'Sikkim',
+                'Tamil Nadu', 'Telangana', 'Tripura', 'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+                'Andaman and Nicobar Islands', 'Chandigarh', 'Dadra and Nagar Haveli and Daman and Diu',
+                'Delhi', 'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry'
+            ];
+            document.querySelectorAll('#authForm select[name="state"], #regForm select[name="state"]').forEach(function (sel) {
+                sel.innerHTML = '<option value="">Select your state</option>';
+                INDIAN_STATES_AUTH.forEach(function (name) {
+                    const o = document.createElement('option');
+                    o.value = name;
+                    o.textContent = name;
+                    sel.appendChild(o);
+                });
+            });
+
+            // If already signed in as gov_portal, go to dashboard
             async function checkAuthStatus() {
                 const { data: { session } } = await supabase.auth.getSession();
-                if (session) {
-                    const { data: metadata, error: metadataError } = await supabase
-                        .from('users_metadata')
-                        .select('role')
-                        .eq('id', session.user.id)
-                        .maybeSingle();
-                    if (metadataError) {
-                        console.error('Error fetching metadata on init:', metadataError);
-                        return;
-                    }
-                    if (metadata && metadata.role === 'gov_portal') {
-                        window.location.href = 'samudradashboard.html';
-                    }
+                if (!session) return;
+
+                const { data: metadata, error: metadataError } = await supabase
+                    .from('users_metadata')
+                    .select('role, state, department_name')
+                    .eq('id', session.user.id)
+                    .maybeSingle();
+
+                if (metadataError) {
+                    console.error('Error fetching metadata on init:', metadataError);
+                    return;
                 }
+
+                if (metadata && metadata.role === 'gov_portal') {
+                    localStorage.setItem('samudra_suraksha_user', JSON.stringify({
+                        email: session.user.email,
+                        id: session.user.id,
+                        state: metadata.state,
+                        department_name: metadata.department_name,
+                        role: metadata.role,
+                        loginTime: new Date().getTime()
+                    }));
+                    window.location.replace('/dashboard');
+                    return;
+                }
+
+                await supabase.auth.signOut();
+                showError('This account is not authorized for the government portal.');
             }
             checkAuthStatus();
 
@@ -985,7 +998,7 @@
                             // Verify dashboard accessibility
                             try {
                                 console.log('Checking dashboard accessibility');
-                                const dashboardResponse = await fetch('samudradashboard.html', { method: 'HEAD' });
+                                const dashboardResponse = await fetch('/dashboard', { method: 'HEAD' });
                                 if (!dashboardResponse.ok) {
                                     console.error('Dashboard access failed:', dashboardResponse.status, dashboardResponse.statusText);
                                     throw new Error('Unable to access the dashboard. Please contact support.');

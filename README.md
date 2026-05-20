@@ -54,7 +54,7 @@ Browser (Officers)
                              Flask API (app.py)
                                ├─ /api/twitter/*        ─── Gopher API proxy
                                ├─ /api/analyze-tweets   ─── Gemini AI (server-side)
-                               ├─ /api/send-alert       ─── Firebase FCM
+                               ├─ /api/send-fcm-alert (and /api/send-alert) ─── Firebase FCM
                                └─ /api/health           ─── Health check
                                     │
                                     ▼
@@ -175,7 +175,7 @@ The app will be available at: **http://localhost:5000**
 | `POST` | `/api/twitter/search` | Search Twitter via Gopher API |
 | `GET` | `/api/twitter/result/<jobUUID>` | Poll search results |
 | `POST` | `/api/analyze-tweets` | Analyze tweet batch with Gemini AI |
-| `POST` | `/api/send-alert` | Send FCM push notification |
+| `POST` | `/api/send-fcm-alert` or `/api/send-alert` | Send FCM push notification |
 | `GET` | `/api/health` | Health check |
 
 ### Example: Analyze Tweets
@@ -211,12 +211,12 @@ Samudra-Suraksha/
 │       ├── fcm_service.py    # Firebase Cloud Messaging
 │       └── __init__.py
 │
-├── auth.html                 # Login/signup page
+├── auth.html                 # Login / register (inline Supabase auth)
 ├── samudradashboard.html     # Main dashboard
 ├── dashboard33.js            # Dashboard logic (reports, maps, alerts)
 ├── social.js                 # Social media monitoring
 ├── coastalinfo.js            # Coastal information tab
-├── auth.js                   # Authentication logic
+├── auth.js                   # Legacy/unused; auth lives in auth.html
 └── logo.png                  # Application logo
 ```
 

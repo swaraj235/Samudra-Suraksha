@@ -15,17 +15,20 @@ logger = logging.getLogger(__name__)
 
 
 @alerts_bp.route("/api/send-fcm-alert", methods=["POST"])
+@alerts_bp.route("/api/send-alert", methods=["POST"])
 def send_fcm_alert():
     """
     Send a real FCM push notification for a government alert.
-    
+
+    Registered at both /api/send-fcm-alert and /api/send-alert (legacy dashboard path).
+
     Body:
     {
         "title": "Alert title",
-        "description": "Alert body text",
+        "description": "Alert body text",   // alias: "body"
         "severity": "emergency|high|medium|low",
-        "target_region": "Kerala",        // optional
-        "tokens": ["device_token_1", ...] // optional, uses topic if absent
+        "target_region": "Kerala",          // alias: "region"
+        "tokens": ["device_token_1", ...]   // optional, uses topic if absent
     }
     """
     body = request.get_json(silent=True)
@@ -33,9 +36,11 @@ def send_fcm_alert():
         return jsonify({"error": "Invalid JSON body"}), 400
 
     title = body.get("title", "").strip()
-    description = body.get("description", "").strip()
+    description = (body.get("description") or body.get("body") or "").strip()
     severity = body.get("severity", "medium")
-    region = body.get("target_region", "All Regions")
+    region = body.get("target_region") or body.get("region") or "All Regions"
+    if isinstance(region, str):
+        region = region.strip() or "All Regions"
     tokens = body.get("tokens", [])
 
     if not title or not description:

@@ -43,6 +43,9 @@ document.addEventListener('DOMContentLoaded', () => {
         sourceFilter.innerHTML = `
             <option value="all">All Sources</option>
             <option value="twitter">Twitter</option>
+            <option value="reddit">Reddit</option>
+            <option value="news">News</option>
+            <option value="hackernews">Hacker News</option>
         `;
         searchInput.parentElement.appendChild(sourceFilter);
     }
@@ -67,6 +70,24 @@ document.addEventListener('DOMContentLoaded', () => {
         trendingKeywordsContainer: !!trendingKeywordsContainer
     });
 
+    function applyChartTheme() {
+        const p = getThemePalette();
+        tweetVolumeChart.data.datasets[0].borderColor = p.line;
+        tweetVolumeChart.data.datasets[0].backgroundColor = p.fill;
+        tweetVolumeChart.options.scales.y.ticks.color = p.text;
+        tweetVolumeChart.options.scales.y.grid.color = p.grid;
+        tweetVolumeChart.options.scales.x.ticks.color = p.text;
+
+        categoryChart.options.plugins.legend.labels.color = p.text;
+        hazardDistributionChart.options.scales.y.ticks.color = p.text;
+        hazardDistributionChart.options.scales.y.grid.color = p.grid;
+        hazardDistributionChart.options.scales.x.ticks.color = p.text;
+
+        tweetVolumeChart.update('none');
+        categoryChart.update('none');
+        hazardDistributionChart.update('none');
+    }
+
     if (!searchInput || !searchButton || !tweetsContainer || !loadingSpinner || !hazardFilter || !sentimentFilter || !regionFilter || !urgencyFilter || !dateFilter || !sourceFilter || !refreshButton || !socialMapContainer || !tweetVolumeChartCanvas || !sentimentChartCanvas || !hazardDistributionChartCanvas || !trendingKeywordsContainer) {
         console.error('social.js: Missing required DOM elements');
         if (tweetsContainer) tweetsContainer.innerHTML = '<p class="text-red-600 font-sans text-sm">Error: Required elements not found</p>';
@@ -81,6 +102,24 @@ document.addEventListener('DOMContentLoaded', () => {
     socialMap.addLayer(markers);
 
     // ── Initialize Charts ───────────────────────────────────────────────
+    function getThemePalette() {
+        const dark = document.documentElement.classList.contains('dark');
+        return dark ? {
+            text: '#cbd5e1',
+            grid: 'rgba(148,163,184,0.22)',
+            line: '#34d399',
+            fill: 'rgba(52,211,153,0.15)',
+            card: '#111c33'
+        } : {
+            text: '#334155',
+            grid: 'rgba(51,65,85,0.12)',
+            line: '#10b981',
+            fill: 'rgba(16,185,129,0.1)',
+            card: '#ffffff'
+        };
+    }
+
+    const palette = getThemePalette();
     const tweetVolumeChart = new Chart(tweetVolumeChartCanvas, {
         type: 'line',
         data: {
@@ -88,12 +127,19 @@ document.addEventListener('DOMContentLoaded', () => {
             datasets: [{
                 label: 'Posts',
                 data: [],
-                borderColor: '#10b981',
-                backgroundColor: 'rgba(16,185,129,0.1)',
+                borderColor: palette.line,
+                backgroundColor: palette.fill,
                 tension: 0.4, fill: true, pointRadius: 3
             }]
         },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, ticks: { color: palette.text }, grid: { color: palette.grid } },
+                x: { ticks: { color: palette.text }, grid: { display: false } }
+            }
+        }
     });
 
     const categoryChart = new Chart(sentimentChartCanvas, {
@@ -105,7 +151,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 backgroundColor: ['#ef4444','#3b82f6','#f59e0b','#10b981','#6b7280']
             }]
         },
-        options: { responsive: true, plugins: { legend: { position: 'right', labels: { boxWidth: 10, font: { size: 10 } } } } }
+        options: {
+            responsive: true,
+            plugins: {
+                legend: {
+                    position: 'right',
+                    labels: { boxWidth: 10, font: { size: 10 }, color: palette.text }
+                }
+            }
+        }
     });
 
     const hazardDistributionChart = new Chart(hazardDistributionChartCanvas, {
@@ -118,7 +172,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 backgroundColor: ['#3b82f6','#8b5cf6','#06b6d4','#f59e0b','#ef4444','#6b7280']
             }]
         },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, ticks: { color: palette.text }, grid: { color: palette.grid } },
+                x: { ticks: { color: palette.text }, grid: { display: false } }
+            }
+        }
     });
 
     const observer = new MutationObserver(() => {
@@ -215,6 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
     //    Client calls /api/analyze-tweets — key never exposed in browser.
 
     let tweetsData = [];
+    let filteredTweetsData = [];
     let tweetVolumeData = [];
     let lastSearchTime = Date.now();
 
@@ -248,14 +310,24 @@ document.addEventListener('DOMContentLoaded', () => {
     async function searchTwitter(query = '(tsunami OR flood OR waves OR erosion OR storm OR cyclone OR बाढ़ OR सुनामी OR வெள்ளம் OR వరద OR വെള്ളപ്പൊക്കം OR புயல் OR తుఫాను OR കൊടുങ്കാറ്റ്) lang:en OR lang:hi OR lang:ta OR lang:te OR lang:ml', max_results = 20) {
         console.log('social.js: Searching Twitter with query:', query, 'max_results:', max_results);
         loadingSpinner.classList.remove('hidden');
-        tweetsContainer.innerHTML = '';
+        tweetsContainer.classList.add('opacity-70');
         markers.clearLayers();
+
+        const selectedSource = sourceFilter.value;
+        const sourceMap = {
+            twitter: ['twitter'],
+            reddit: ['reddit'],
+            news: ['news'],
+            hackernews: ['hackernews'],
+            all: ['twitter', 'reddit', 'news', 'hackernews']
+        };
+        const selectedSources = sourceMap[selectedSource] || sourceMap.all;
 
         try {
             const response = await fetch('/api/twitter/search', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ query, max_results })
+                body: JSON.stringify({ query, max_results, sources: selectedSources })
             });
             const data = await response.json();
             console.log('social.js: Search API Response:', data);
@@ -263,6 +335,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.error || !data.jobUUID) {
                 console.error('social.js: Search Error:', data.error || 'No jobUUID');
                 tweetsContainer.innerHTML = `<p class="text-red-600 font-sans text-sm">Error: ${data.error || 'No job UUID'}</p>`;
+                tweetsContainer.classList.remove('opacity-70');
                 loadingSpinner.classList.add('hidden');
                 return;
             }
@@ -275,6 +348,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (attempts >= maxAttempts) {
                     console.error('social.js: Max polling attempts reached');
                     tweetsContainer.innerHTML = '<p class="text-red-600 font-sans text-sm">Timeout: No results after 10 attempts</p>';
+                    tweetsContainer.classList.remove('opacity-70');
                     loadingSpinner.classList.add('hidden');
                     return;
                 }
@@ -290,6 +364,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (resultData.error) {
                         console.error('social.js: Result Error:', resultData.error);
                         tweetsContainer.innerHTML = `<p class="text-red-600 font-sans text-sm">Error: ${resultData.error}</p>`;
+                        tweetsContainer.classList.remove('opacity-70');
                         loadingSpinner.classList.add('hidden');
                         return;
                     }
@@ -306,12 +381,13 @@ document.addEventListener('DOMContentLoaded', () => {
                         await processTweetsWithGemini(tweets);
                         updateTweetVolume();
                         applyFilters();
-                        updateAnalytics();
                         updateMap(tweetsData);
+                        tweetsContainer.classList.remove('opacity-70');
                         loadingSpinner.classList.add('hidden');
                         return;
                     } else if (resultData.status === 'done' && tweets.length === 0) {
                         tweetsContainer.innerHTML = '<p class="text-gray-500 font-sans text-sm p-4">No relevant coastal hazard news found for this query. Try a broader search term.</p>';
+                        tweetsContainer.classList.remove('opacity-70');
                         loadingSpinner.classList.add('hidden');
                         return;
                     }
@@ -323,6 +399,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         setTimeout(pollResults, 2000);
                     } else {
                         tweetsContainer.innerHTML = `<p class="text-red-600 font-sans text-sm">Error: ${error.message}</p>`;
+                        tweetsContainer.classList.remove('opacity-70');
                         loadingSpinner.classList.add('hidden');
                     }
                 }
@@ -332,6 +409,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             console.error('social.js: Search Request Error:', error.message);
             tweetsContainer.innerHTML = `<p class="text-red-600 font-sans text-sm">Error: ${error.message}</p>`;
+            tweetsContainer.classList.remove('opacity-70');
             loadingSpinner.classList.add('hidden');
         }
     }
@@ -537,16 +615,17 @@ document.addEventListener('DOMContentLoaded', () => {
                    (category === 'all' || tweet.category.toLowerCase().includes(category.toLowerCase().replace('_', ' '))) &&
                    (region === 'all' || tweet.location.region === region) &&
                    (urgency === 'all' || tweet.urgency === urgency) &&
-                   (source === 'all' || tweet.source === 'twitter') &&
+                   (source === 'all' || tweet.source === source) &&
                    (dateRange === 'all' ||
                     (dateRange === '24h' && timeDiff <= 24) ||
                     (dateRange === '7d' && timeDiff <= 168) ||
                     (dateRange === '30d' && timeDiff <= 720));
         });
+        filteredTweetsData = filteredTweets;
 
         displayTweets(filteredTweets);
         updateMap(filteredTweets);
-        updateAnalytics();
+        updateAnalytics(filteredTweets);
     }
 
     function updateTweetVolume() {
@@ -559,7 +638,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tweetVolumeChart.update();
     }
 
-    function updateAnalytics() {
+    function updateAnalytics(dataset = tweetsData) {
         const categoryCounts = {
             'Emergency/Alert': 0,
             'Observation/Neutral Report': 0,
@@ -567,19 +646,19 @@ document.addEventListener('DOMContentLoaded', () => {
             'Awareness/Official Info': 0,
             'Other': 0
         };
-        tweetsData.forEach(tweet => {
+        dataset.forEach(tweet => {
             categoryCounts[tweet.category] = (categoryCounts[tweet.category] || 0) + 1;
         });
         categoryChart.data.datasets[0].data = Object.values(categoryCounts);
         categoryChart.update();
 
         const hazardCounts = { flood: 0, tsunami: 0, waves: 0, erosion: 0, storm: 0, other: 0 };
-        tweetsData.forEach(tweet => hazardCounts[tweet.hazard]++);
+        dataset.forEach(tweet => hazardCounts[tweet.hazard]++);
         hazardDistributionChart.data.datasets[0].data = Object.values(hazardCounts);
         hazardDistributionChart.update();
 
         const hashtagCounts = {};
-        tweetsData.flatMap(tweet => tweet.hashtags).forEach(tag => {
+        dataset.flatMap(tweet => tweet.hashtags).forEach(tag => {
             const cleanTag = tag.toLowerCase();
             hashtagCounts[cleanTag] = (hashtagCounts[cleanTag] || 0) + 1;
         });
@@ -588,8 +667,7 @@ document.addEventListener('DOMContentLoaded', () => {
             .slice(0, 5)
             .map(([tag, count]) => `<span class="inline-block bg-blue-100 rounded-full px-3 py-1 text-sm font-semibold text-blue-700 mr-2 mb-2">#${tag.slice(1)}: ${count}</span>`)
             .join('');
-
-        const misinfoCount = tweetsData.filter(tweet => tweet.misinfo_flag).length;
+        const misinfoCount = dataset.filter(tweet => tweet.misinfo_flag).length;
 
         trendingKeywordsContainer.innerHTML = `${trending || ''} <span class="bg-red-100 text-red-700 px-2 py-1 rounded text-sm ml-2">⚠️ Suspect: ${misinfoCount}</span>` || '<p class="text-gray-600 font-sans text-sm">No trending hashtags.</p>';
     }
@@ -610,7 +688,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="p-2 max-w-xs">
                         <p class="font-semibold">${tweet.metadata?.username || 'Unknown User'}</p>
                         <p class="text-sm text-gray-700">${tweet.content.substring(0, 100)}...</p>
-                        <p class="text-xs text-gray-500">Category: <span class="px-2 py-1 rounded-full ${getCategoryBadgeClass(tweet.category)}">${tweet.category} (${(tweet.categoryScore * 100).toFixed(1)}%)</span></p>
+                        <p class="text-xs text-gray-500">Category: <span class="px-2 py-1 rounded-full ${getCategoryBadgeClass(tweet.category)}">${tweet.category} (${Math.round((tweet.confidence || 0.7) * 100)}%)</span></p>
                         <p class="text-xs text-gray-500">Hazard: ${tweet.hazard}</p>
                         <p class="text-xs text-gray-500">Urgency: <span class="px-2 py-1 rounded-full ${tweet.urgency === 'high' ? 'bg-red-500 text-white' : tweet.urgency === 'medium' ? 'bg-yellow-500 text-white' : 'bg-green-500 text-white'}">${tweet.urgency}</span></p>
                         <p class="text-xs text-gray-500">Region: ${tweet.location.region}</p>
@@ -663,6 +741,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                        tweet.urgency === 'medium' ? 'bg-yellow-500 text-white' : 'bg-green-500 text-white';
             const misinfoBadge = tweet.misinfo_flag
                 ? `<span class="px-2 py-1 rounded-full bg-red-100 text-red-700 text-xs">⚠️ Suspect</span>` : '';
+            const sourceLabel = (tweet.source || 'news').replace('hackernews', 'hacker news');
             const articleLink = tweet.url
                 ? `<a href="${tweet.url}" target="_blank" rel="noopener noreferrer"
                       class="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium mt-1">
@@ -683,7 +762,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div>
                                 <p class="font-semibold text-sm text-gray-900">${username}</p>
-                                <p class="text-xs text-gray-400">${createdAt} · ${regionName}</p>
+                                <p class="text-xs text-gray-400">${createdAt} · ${regionName} · ${sourceLabel}</p>
                             </div>
                         </div>
                         <div class="flex items-center gap-1">
@@ -761,6 +840,12 @@ document.addEventListener('DOMContentLoaded', () => {
     urgencyFilter.addEventListener('change', applyFilters);
     dateFilter.addEventListener('change', applyFilters);
     sourceFilter.addEventListener('change', applyFilters);
+
+    window.addEventListener('dashboard-theme-changed', applyChartTheme);
+    window.addEventListener('storage', (event) => {
+        if (event.key === 'dashboardSettings') applyChartTheme();
+    });
+    applyChartTheme();
 
     console.log('social.js: Initialized successfully. Ready for searches.');
 });
